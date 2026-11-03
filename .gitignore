@@ -1,0 +1,27 @@
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Playwright artifacts
+test-results/
+playwright-report/
+reports/
+blob-report/
+
+# Build files
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+
+# IDE and OS
+.idea/
+.DS_Store
+Thumbs.db
