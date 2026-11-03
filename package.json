@@ -1,15 +1,43 @@
+
 {
   "name": "autoheal-qa",
   "version": "1.0.0",
-  "description": "",
+  "private": true,
+  "description": "Enterprise AI-Powered Self-Healing Test Automation Framework built with Playwright, TypeScript, and Hybrid AI.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:regression": "playwright test --grep @regression",
+    "test:list": "playwright test --list",
+    "test:retry": "playwright test --retries=2",
+    "test:trace": "playwright test --trace on",
+    "report": "playwright show-report reports/html",
+    "typecheck": "tsc --noEmit",
+    "validate": "npm run typecheck && npm run test:list",
+    "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\""
   },
-  "keywords": [],
+  "keywords": [
+    "playwright",
+    "typescript",
+    "test-automation",
+    "self-healing",
+    "ai-testing",
+    "quality-assurance",
+    "e2e-testing",
+    "hybrid-ai",
+    "automation-framework"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/node": "^26.6.6",
