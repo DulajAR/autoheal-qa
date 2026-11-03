@@ -1,0 +1,61 @@
+
+name: AutoHeal QA - Playwright CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/test-infrastructure
+
+  pull_request:
+    branches:
+      - main
+      - develop
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  playwright-tests:
+    name: TypeScript and Playwright Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Validate TypeScript
+        run: npm run typecheck
+
+      - name: Run Playwright tests
+        run: npm run test:chromium
+        env:
+          CI: "true"
+          BASE_URL: https://the-internet.herokuapp.com
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            reports/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
