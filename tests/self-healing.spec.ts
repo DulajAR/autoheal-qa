@@ -33,7 +33,7 @@ test.describe("Self-Healing Locator Tests", () => {
       ],
       {
         enabled: false,
-        timeoutMs: 300,
+        timeoutMs: 1500,
       }
     );
 
