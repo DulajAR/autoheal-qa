@@ -17,17 +17,21 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+# Reduce overlapping executions on the same source branch.
+concurrency:
+  group: autoheal-history-${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   playwright-tests:
     name: TypeScript and Cross-Browser Tests
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
 
     steps:
-      # Step 1: Checkout source code
+      # Step 1: Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -42,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Step 4: Install all supported browsers
+      # Step 4: Install Playwright browsers
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium firefox webkit
 
@@ -50,7 +54,7 @@ jobs:
       - name: Validate TypeScript
         run: npm run typecheck
 
-      # Step 6: Run tests across all configured browsers
+      # Step 6: Run cross-browser tests
       - name: Run cross-browser tests
         run: npx playwright test
         env:
@@ -60,29 +64,136 @@ jobs:
           HEADLESS: "true"
           WORKERS: "1"
 
-      # Step 7: Validate self-healing audit events
-      # Only validate expected healing counts when the test
-      # execution completed successfully.
+      # Step 7: Validate self-healing audit
       - name: Validate self-healing audit
         if: success()
         run: node scripts/validate-healing-report.cjs
 
-      # Step 8: Generate analytics dashboard
-      # Run even when tests fail, provided a report exists.
-      - name: Generate AutoHeal Analytics Dashboard
+      # Step 8: Restore previous historical analytics
+      - name: Restore previous AutoHeal history
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          HISTORY_BRANCH: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports/autoheal
+
+          echo "Searching historical artifacts..."
+          echo "Branch: $HISTORY_BRANCH"
+          echo "Current run: $CURRENT_RUN_ID"
+
+          # Find completed runs on the same branch.
+          run_ids=$(gh run list \
+            --repo "$REPOSITORY" \
+            --workflow playwright.yml \
+            --branch "$HISTORY_BRANCH" \
+            --status completed \
+            --limit 100 \
+            --json databaseId,event \
+            --jq '.[] | select(
+              .event == "push" or
+              .event == "workflow_dispatch" or
+              .event == "pull_request"
+            ) | .databaseId')
+
+          restored=false
+
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+
+            # Never restore from the current run.
+            if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
+              continue
+            fi
+
+            echo "Checking previous workflow run: $run_id"
+
+            temp_dir=$(mktemp -d)
+
+            # Download and extract the analytics artifact.
+            if gh run download "$run_id" \
+              --repo "$REPOSITORY" \
+              --name autoheal-analytics \
+              --dir "$temp_dir"; then
+
+              history_file=""
+
+              # GitHub artifact paths may vary.
+              if [ -f "$temp_dir/history.json" ]; then
+                history_file="$temp_dir/history.json"
+              elif [ -f "$temp_dir/reports/autoheal/history.json" ]; then
+                history_file="$temp_dir/reports/autoheal/history.json"
+              fi
+
+              if [ -n "$history_file" ]; then
+
+                # Validate JSON before restoring.
+                if jq -e 'type == "object"' \
+                  "$history_file" >/dev/null; then
+
+                  cp "$history_file" \
+                    reports/autoheal/history.json
+
+                  echo "Previous history restored successfully."
+                  echo "Source workflow run: $run_id"
+
+                  restored=true
+                else
+                  echo "Invalid history JSON in run $run_id"
+                fi
+
+              else
+                echo "history.json missing from run $run_id"
+              fi
+
+            else
+              echo "No downloadable analytics artifact in run $run_id"
+            fi
+
+            rm -rf "$temp_dir"
+
+            if [ "$restored" = true ]; then
+              break
+            fi
+
+          done <<< "$run_ids"
+
+          if [ "$restored" = false ]; then
+            echo "No usable previous history found."
+            echo "Starting a new historical dataset."
+          fi
+
+      # Step 9: Generate historical reliability analytics
+      - name: Generate AutoHeal Historical Analytics
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ -f reports/autoheal/summary.json ]; then
-            echo "Generating AutoHeal QA analytics dashboard..."
+
+            echo "Generating execution history..."
+            node scripts/generate-history.cjs
+
+            echo "Analyzing test reliability..."
+            node scripts/analyze-reliability.cjs
+
+            echo "Generating analytics dashboard..."
             node scripts/generate-analytics.cjs
+
+            echo "Historical analytics generated successfully."
+
           else
             echo "AutoHeal summary report not found."
-            echo "Skipping analytics generation."
+            echo "Skipping historical analytics generation."
           fi
 
-      # Step 9: Upload Playwright HTML reports,
-      # screenshots, traces, and other debugging artifacts
+      # Step 10: Upload Playwright reports and traces
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -94,7 +205,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # Step 10: Upload AutoHeal Analytics Dashboard
+      # Step 11: Upload AutoHeal analytics
       - name: Upload AutoHeal Analytics
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,6 +213,8 @@ jobs:
           name: autoheal-analytics
           path: |
             reports/autoheal/summary.json
+            reports/autoheal/history.json
+            reports/autoheal/reliability.json
             reports/autoheal/analytics.html
           if-no-files-found: warn
           retention-days: 14
