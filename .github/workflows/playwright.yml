@@ -27,30 +27,30 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # Checkout source code
+      # Step 1: Checkout source code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Configure Node.js
+      # Step 2: Configure Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
 
-      # Install project dependencies
+      # Step 3: Install project dependencies
       - name: Install dependencies
         run: npm ci
 
-      # Install all supported browsers
+      # Step 4: Install all supported browsers
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium firefox webkit
 
-      # Validate TypeScript
+      # Step 5: Validate TypeScript
       - name: Validate TypeScript
         run: npm run typecheck
 
-      # Run tests across all configured browsers
+      # Step 6: Run tests across all configured browsers
       - name: Run cross-browser tests
         run: npx playwright test
         env:
@@ -60,14 +60,48 @@ jobs:
           HEADLESS: "true"
           WORKERS: "1"
 
-      # Upload reports and debugging artifacts
+      # Step 7: Validate self-healing audit events
+      # Only validate expected healing counts when the test
+      # execution completed successfully.
+      - name: Validate self-healing audit
+        if: success()
+        run: node scripts/validate-healing-report.cjs
+
+      # Step 8: Generate analytics dashboard
+      # Run even when tests fail, provided a report exists.
+      - name: Generate AutoHeal Analytics Dashboard
+        if: always()
+        shell: bash
+        run: |
+          if [ -f reports/autoheal/summary.json ]; then
+            echo "Generating AutoHeal QA analytics dashboard..."
+            node scripts/generate-analytics.cjs
+          else
+            echo "AutoHeal summary report not found."
+            echo "Skipping analytics generation."
+          fi
+
+      # Step 9: Upload Playwright HTML reports,
+      # screenshots, traces, and other debugging artifacts
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: autoheal-qa-test-results
           path: |
-            reports/
+            reports/html/
             test-results/
           if-no-files-found: warn
           retention-days: 7
+
+      # Step 10: Upload AutoHeal Analytics Dashboard
+      - name: Upload AutoHeal Analytics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoheal-analytics
+          path: |
+            reports/autoheal/summary.json
+            reports/autoheal/analytics.html
+          if-no-files-found: warn
+          retention-days: 14
