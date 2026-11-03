@@ -3,6 +3,7 @@ import {
   expect,
   type Page,
   type Locator,
+  type Response,
 } from "@playwright/test";
 
 import { BasePage } from "../core/BasePage";
@@ -21,9 +22,9 @@ export class LoginPage extends BasePage {
 
     this.passwordInput = page.locator("#password");
 
-  this.loginButton = page.getByRole("button", {
-  name: "Login",
-});
+    this.loginButton = page.getByRole("button", {
+      name: "Login",
+    });
 
     this.notification = page.locator("#flash");
   }
@@ -45,7 +46,11 @@ export class LoginPage extends BasePage {
 
   /**
    * Fill credentials and submit the login form.
-   * Passwords are never included in logs.
+   *
+   * Includes temporary diagnostics to investigate
+   * intermittent Firefox login failures.
+   *
+   * Passwords and response bodies are never logged.
    */
   async login(
     username: string,
@@ -54,10 +59,40 @@ export class LoginPage extends BasePage {
     Logger.info("Login attempt started");
 
     await this.usernameInput.fill(username);
-
     await this.passwordInput.fill(password);
 
+    // Start listening before submitting the form.
+    const loginResponsePromise: Promise<Response | null> =
+      this.page.waitForResponse(
+        (response) =>
+          response.url().includes("/authenticate") &&
+          response.request().method() === "POST",
+        {
+          timeout: 15000,
+        }
+      ).catch(() => null);
+
     await this.loginButton.click();
+
+    const response = await loginResponsePromise;
+
+    if (response) {
+      Logger.info(
+        `Login response status: ${response.status()}`
+      );
+
+      Logger.info(
+        `Login response URL: ${response.url()}`
+      );
+    } else {
+      Logger.warn(
+        "No matching login response captured"
+      );
+    }
+
+    Logger.info(
+      `Current page URL: ${this.page.url()}`
+    );
 
     Logger.info("Login form submitted");
   }
