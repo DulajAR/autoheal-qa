@@ -15,9 +15,7 @@ export default defineConfig({
 
   retries: process.env.CI ? 2 : 0,
 
-  workers: process.env.CI
-    ? 2
-    : environment.workers,
+  workers: environment.workers,
 
   timeout: environment.testTimeout,
 
