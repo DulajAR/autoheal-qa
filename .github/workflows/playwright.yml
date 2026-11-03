@@ -19,7 +19,7 @@ permissions:
   contents: read
   actions: read
 
-# Prevent overlapping executions from using stale history.
+# Reduce overlapping executions on the same source branch.
 concurrency:
   group: autoheal-history-${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
   cancel-in-progress: false
@@ -42,7 +42,7 @@ jobs:
           node-version: "24"
           cache: npm
 
-      # Step 3: Install dependencies
+      # Step 3: Install project dependencies
       - name: Install dependencies
         run: npm ci
 
@@ -69,7 +69,7 @@ jobs:
         if: success()
         run: node scripts/validate-healing-report.cjs
 
-      # Step 8: Restore historical data from a previous run
+      # Step 8: Restore previous historical analytics
       - name: Restore previous AutoHeal history
         if: always()
         shell: bash
@@ -83,9 +83,11 @@ jobs:
 
           mkdir -p reports/autoheal
 
-          echo "Searching historical artifacts for branch: $HISTORY_BRANCH"
+          echo "Searching historical artifacts..."
+          echo "Branch: $HISTORY_BRANCH"
+          echo "Current run: $CURRENT_RUN_ID"
 
-          # Find completed workflow runs on this branch.
+          # Find completed runs on the same branch.
           run_ids=$(gh run list \
             --repo "$REPOSITORY" \
             --workflow playwright.yml \
@@ -93,88 +95,64 @@ jobs:
             --status completed \
             --limit 100 \
             --json databaseId,event \
-            --jq '.[] | select(.event == "push" or .event == "workflow_dispatch" or .event == "pull_request") | .databaseId')
+            --jq '.[] | select(
+              .event == "push" or
+              .event == "workflow_dispatch" or
+              .event == "pull_request"
+            ) | .databaseId')
 
           restored=false
 
           while IFS= read -r run_id; do
             [ -n "$run_id" ] || continue
 
-            # Do not restore from the current execution.
+            # Never restore from the current run.
             if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
               continue
             fi
 
-            echo "Checking workflow run: $run_id"
-
-            # Fetch metadata for the candidate run.
-            run_info=$(gh api \
-              "repos/$REPOSITORY/actions/runs/$run_id" \
-              --jq '{path: .path, head_branch: .head_branch, head_repository: .head_repository.full_name}')
-
-            # Verify the workflow file.
-            if ! jq -e \
-              '.path | strings | contains("playwright.yml@")' \
-              <<< "$run_info" >/dev/null; then
-              continue
-            fi
-
-            # Verify that the source repository and branch match.
-            if ! jq -e \
-              --arg branch "$HISTORY_BRANCH" \
-              --arg repo "$REPOSITORY" \
-              '.head_branch == $branch and .head_repository == $repo' \
-              <<< "$run_info" >/dev/null; then
-              continue
-            fi
-
-            # Locate an unexpired AutoHeal analytics artifact.
-            artifact_id=$(gh api \
-              "repos/$REPOSITORY/actions/runs/$run_id/artifacts" \
-              --jq '.artifacts[] | select(.name == "autoheal-analytics" and .expired == false) | .id' \
-              | head -n 1)
-
-            if [ -z "$artifact_id" ]; then
-              echo "No usable analytics artifact in run $run_id"
-              continue
-            fi
-
-            echo "Found artifact: $artifact_id"
+            echo "Checking previous workflow run: $run_id"
 
             temp_dir=$(mktemp -d)
 
-            # Download artifact ZIP, following GitHub redirects.
-            if curl --fail --location --silent --show-error \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPOSITORY/actions/artifacts/$artifact_id/zip" \
-              -o "$temp_dir/artifact.zip"; then
+            # Download and extract the analytics artifact.
+            if gh run download "$run_id" \
+              --repo "$REPOSITORY" \
+              --name autoheal-analytics \
+              --dir "$temp_dir"; then
 
-              # Support both possible ZIP paths.
-              if unzip -p "$temp_dir/artifact.zip" \
-                history.json \
-                > "$temp_dir/history.json" 2>/dev/null \
-                || unzip -p "$temp_dir/artifact.zip" \
-                reports/autoheal/history.json \
-                > "$temp_dir/history.json" 2>/dev/null; then
+              history_file=""
 
-                # Confirm that the history file is valid JSON.
+              # GitHub artifact paths may vary.
+              if [ -f "$temp_dir/history.json" ]; then
+                history_file="$temp_dir/history.json"
+              elif [ -f "$temp_dir/reports/autoheal/history.json" ]; then
+                history_file="$temp_dir/reports/autoheal/history.json"
+              fi
+
+              if [ -n "$history_file" ]; then
+
+                # Validate JSON before restoring.
                 if jq -e 'type == "object"' \
-                  "$temp_dir/history.json" >/dev/null; then
+                  "$history_file" >/dev/null; then
 
-                  cp "$temp_dir/history.json" \
+                  cp "$history_file" \
                     reports/autoheal/history.json
 
                   echo "Previous history restored successfully."
+                  echo "Source workflow run: $run_id"
+
                   restored=true
                 else
-                  echo "Previous history JSON is invalid."
+                  echo "Invalid history JSON in run $run_id"
                 fi
+
               else
-                echo "History file not found inside artifact."
+                echo "history.json missing from run $run_id"
               fi
+
             else
-              echo "Artifact download failed for run $run_id"
+              echo "No downloadable analytics artifact in run $run_id"
             fi
 
             rm -rf "$temp_dir"
@@ -182,6 +160,7 @@ jobs:
             if [ "$restored" = true ]; then
               break
             fi
+
           done <<< "$run_ids"
 
           if [ "$restored" = false ]; then
@@ -189,7 +168,7 @@ jobs:
             echo "Starting a new historical dataset."
           fi
 
-      # Step 9: Generate historical analytics
+      # Step 9: Generate historical reliability analytics
       - name: Generate AutoHeal Historical Analytics
         if: always()
         shell: bash
@@ -197,6 +176,7 @@ jobs:
           set -euo pipefail
 
           if [ -f reports/autoheal/summary.json ]; then
+
             echo "Generating execution history..."
             node scripts/generate-history.cjs
 
@@ -207,6 +187,7 @@ jobs:
             node scripts/generate-analytics.cjs
 
             echo "Historical analytics generated successfully."
+
           else
             echo "AutoHeal summary report not found."
             echo "Skipping historical analytics generation."
