@@ -1,5 +1,6 @@
 
 import type { Locator, Page } from "@playwright/test";
+import { environment } from "../../config/environment";
 import { Logger } from "./Logger";
 
 export type LocatorStrategy = {
@@ -11,6 +12,7 @@ export type LocatorStrategy = {
 export type HealingOptions = {
   timeoutMs?: number;
   minimumConfidence?: number;
+  enabled?: boolean;
 };
 
 export class SelfHealingLocator {
@@ -28,9 +30,7 @@ export class SelfHealingLocator {
         timeout: timeoutMs,
       });
 
-      const count = await locator.count();
-
-      if (count !== 1) {
+      if ((await locator.count()) !== 1) {
         return null;
       }
 
@@ -53,6 +53,9 @@ export class SelfHealingLocator {
     const minimumConfidence =
       options.minimumConfidence ?? 0.85;
 
+    const enabled =
+      options.enabled ?? environment.selfHealingEnabled;
+
     const primary = await this.findUniqueVisible(
       primarySelector,
       timeoutMs
@@ -66,14 +69,22 @@ export class SelfHealingLocator {
       `Primary locator unavailable: ${primarySelector}`
     );
 
+    if (!enabled) {
+      const message =
+        `Primary locator unavailable and self-healing disabled: ${primarySelector}`;
+
+      Logger.error(message);
+      throw new Error(message);
+    }
+
     const candidates = [...alternatives]
       .filter(
         (strategy) =>
-          strategy.confidence >= minimumConfidence
+          Number.isFinite(strategy.confidence) &&
+          strategy.confidence >= minimumConfidence &&
+          strategy.confidence <= 1
       )
-      .sort(
-        (a, b) => b.confidence - a.confidence
-      );
+      .sort((a, b) => b.confidence - a.confidence);
 
     for (const candidate of candidates) {
       const recovered = await this.findUniqueVisible(
@@ -100,7 +111,6 @@ export class SelfHealingLocator {
       `Self-healing failed for locator: ${primarySelector}`;
 
     Logger.error(message);
-
     throw new Error(message);
   }
 }

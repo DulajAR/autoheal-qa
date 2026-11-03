@@ -19,7 +19,6 @@ export class LoginPage extends BasePage {
     super(page);
 
     this.usernameInput = page.locator("#username");
-
     this.passwordInput = page.locator("#password");
 
     this.loginButton = page.getByRole("button", {
@@ -29,50 +28,80 @@ export class LoginPage extends BasePage {
     this.notification = page.locator("#flash");
   }
 
-  /**
-   * Navigate to the login page.
-   */
   async open(): Promise<void> {
     Logger.info("Navigating to login page");
 
     await this.navigate("/login");
 
-    await expect(
-      this.usernameInput
-    ).toBeVisible();
+    const username = await this.resolveLocator(
+      "#username",
+      [
+        {
+          name: "username name attribute",
+          selector: 'input[name="username"]',
+          confidence: 0.95,
+        },
+      ]
+    );
+
+    await expect(username).toBeVisible();
 
     Logger.info("Login page loaded successfully");
   }
 
-  /**
-   * Fill credentials and submit the login form.
-   *
-   * Includes temporary diagnostics to investigate
-   * intermittent Firefox login failures.
-   *
-   * Passwords and response bodies are never logged.
-   */
   async login(
     username: string,
     password: string
   ): Promise<void> {
     Logger.info("Login attempt started");
 
-    await this.usernameInput.fill(username);
-    await this.passwordInput.fill(password);
-
-    // Start listening before submitting the form.
-    const loginResponsePromise: Promise<Response | null> =
-      this.page.waitForResponse(
-        (response) =>
-          response.url().includes("/authenticate") &&
-          response.request().method() === "POST",
+    const usernameField = await this.resolveLocator(
+      "#username",
+      [
         {
-          timeout: 15000,
-        }
-      ).catch(() => null);
+          name: "username name attribute",
+          selector: 'input[name="username"]',
+          confidence: 0.95,
+        },
+      ]
+    );
 
-    await this.loginButton.click();
+    const passwordField = await this.resolveLocator(
+      "#password",
+      [
+        {
+          name: "password name attribute",
+          selector: 'input[name="password"]',
+          confidence: 0.95,
+        },
+      ]
+    );
+
+    const submitButton = await this.resolveLocator(
+      'button[type="submit"]',
+      [
+        {
+          name: "login button class",
+          selector: "button.radius",
+          confidence: 0.9,
+        },
+      ]
+    );
+
+    await usernameField.fill(username);
+    await passwordField.fill(password);
+
+    const loginResponsePromise: Promise<Response | null> =
+      this.page
+        .waitForResponse(
+          (response) =>
+            response.url().includes("/authenticate") &&
+            response.request().method() === "POST",
+          { timeout: 15000 }
+        )
+        .catch(() => null);
+
+    await submitButton.click();
 
     const response = await loginResponsePromise;
 
@@ -97,17 +126,12 @@ export class LoginPage extends BasePage {
     Logger.info("Login form submitted");
   }
 
-  /**
-   * Verify that the expected login error appears.
-   */
-  async verifyError(
-    message: string
-  ): Promise<void> {
+  async verifyError(message: string): Promise<void> {
     Logger.info("Verifying login error message");
 
-    await expect(
-      this.notification
-    ).toContainText(message);
+    // Functional assertions must not be bypassed
+    // by the locator healing engine.
+    await expect(this.notification).toContainText(message);
 
     Logger.info("Login error message verified");
   }
