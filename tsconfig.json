@@ -22,7 +22,8 @@
     "config/**/*.ts",
     "src/**/*.ts",
     "tests/**/*.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.reliability.config.ts"
   ],
   "exclude": [
     "node_modules",

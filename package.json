@@ -16,9 +16,13 @@
     "test:list": "playwright test --list",
     "test:retry": "playwright test --retries=2",
     "test:trace": "playwright test --trace on",
+    "test:reliability": "playwright test --config=playwright.reliability.config.ts",
+    "test:reliability:list": "playwright test --config=playwright.reliability.config.ts --list",
     "report": "playwright show-report reports/html",
+    "report:reliability": "playwright show-report reports/reliability-tests",
     "typecheck": "tsc --noEmit",
     "validate": "npm run typecheck && npm run test:list",
+    "validate:reliability": "npm run typecheck && npm run test:reliability",
     "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\""
   },
   "keywords": [

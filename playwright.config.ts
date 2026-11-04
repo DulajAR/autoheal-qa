@@ -13,6 +13,15 @@ export default defineConfig({
   testDir: "./tests",
 
   /**
+   * Exclude dedicated reliability tests from the
+   * main cross-browser end-to-end test suite.
+   *
+   * Reliability tests run separately using:
+   * playwright.reliability.config.ts
+   */
+  testIgnore: ["**/reliability/**"],
+
+  /**
    * Enable parallel test execution.
    */
   fullyParallel: true,
@@ -122,28 +131,28 @@ export default defineConfig({
   },
 
   /**
-   * Browser projects.
+   * Cross-browser test projects.
    */
-  
-projects: [
-  {
-    name: "chromium",
-    use: {
-      ...devices["Desktop Chrome"],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+      },
     },
-  },
-  {
-    name: "firefox",
-    use: {
-      ...devices["Desktop Firefox"],
-    },
-  },
-  {
-    name: "webkit",
-    use: {
-      ...devices["Desktop Safari"],
-    },
-  },
-],
 
+    {
+      name: "firefox",
+      use: {
+        ...devices["Desktop Firefox"],
+      },
+    },
+
+    {
+      name: "webkit",
+      use: {
+        ...devices["Desktop Safari"],
+      },
+    },
+  ],
 });
