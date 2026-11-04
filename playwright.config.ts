@@ -13,11 +13,8 @@ export default defineConfig({
   testDir: "./tests",
 
   /**
-   * Exclude dedicated reliability tests from the
-   * main cross-browser end-to-end test suite.
-   *
-   * Reliability tests run separately using:
-   * playwright.reliability.config.ts
+   * Exclude isolated reliability tests from
+   * the main cross-browser suite.
    */
   testIgnore: ["**/reliability/**"],
 
@@ -29,7 +26,7 @@ export default defineConfig({
   /**
    * Prevent test.only() from running in CI.
    */
-  forbidOnly: !!process.env.CI,
+  forbidOnly: Boolean(process.env.CI),
 
   /**
    * Retry failed tests in CI.
@@ -42,7 +39,7 @@ export default defineConfig({
   workers: environment.workers,
 
   /**
-   * Maximum duration for each test.
+   * Maximum duration of each test.
    */
   timeout: environment.testTimeout,
 
@@ -54,12 +51,12 @@ export default defineConfig({
   },
 
   /**
-   * Test reporters.
+   * Test reporters:
    *
-   * 1. List reporter: terminal output
-   * 2. HTML reporter: interactive test report
-   * 3. JUnit reporter: CI/CD integration
-   * 4. AutoHeal reporter: custom JSON summary
+   * 1. List reporter
+   * 2. HTML reporter
+   * 3. JUnit reporter
+   * 4. AutoHeal custom JSON reporter
    */
   reporter: [
     ["list"],
@@ -85,8 +82,7 @@ export default defineConfig({
   ],
 
   /**
-   * Directory for screenshots,
-   * videos, traces, and other artifacts.
+   * Directory for Playwright test artifacts.
    */
   outputDir: "test-results",
 
@@ -100,7 +96,7 @@ export default defineConfig({
     baseURL: environment.baseUrl,
 
     /**
-     * Run browser in headless mode.
+     * Browser execution mode.
      */
     headless: environment.headless,
 
@@ -115,17 +111,22 @@ export default defineConfig({
     navigationTimeout: 30000,
 
     /**
-     * Capture trace on first retry.
+     * In CI, retain traces for failed attempts.
+     *
+     * Locally, capture traces on the first retry
+     * to reduce execution overhead.
      */
-    trace: "on-first-retry",
+    trace: process.env.CI
+      ? "retain-on-failure"
+      : "on-first-retry",
 
     /**
-     * Capture screenshot on failure.
+     * Capture screenshots for failed tests.
      */
     screenshot: "only-on-failure",
 
     /**
-     * Retain video when a test fails.
+     * Retain video recordings for failed tests.
      */
     video: "retain-on-failure",
   },

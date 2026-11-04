@@ -19,7 +19,7 @@ permissions:
   contents: read
   actions: read
 
-# Prevent overlapping executions on the same branch.
+# Prevent overlapping executions for the same source branch.
 concurrency:
   group: autoheal-history-${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
   cancel-in-progress: false
@@ -31,32 +31,64 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # Step 1: Checkout repository
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Configure Node.js
+      # 2. Configure Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
 
-      # Step 3: Install project dependencies
+      # 3. Install project dependencies
       - name: Install dependencies
         run: npm ci
 
-      # Step 4: Install Playwright browsers
+      # 4. Install Playwright browsers
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium firefox webkit
 
-      # Step 5: Validate TypeScript
+      # 5. Validate TypeScript
       - name: Validate TypeScript
         run: npm run typecheck
 
-      # Step 6: Run original cross-browser suite
+      # 6. Clear previous execution outputs.
+      # Never delete historical history.json here.
+      - name: Prepare fresh AutoHeal execution
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports/autoheal
+
+          rm -f reports/autoheal/summary.json
+          rm -f reports/autoheal/reliability.json
+          rm -f reports/autoheal/analytics.html
+          rm -f reports/autoheal/history.json
+
+          echo "prepared=true" >> "$GITHUB_OUTPUT"
+
+          echo "Fresh execution environment prepared."
+          echo "Previous execution reports removed."
+          echo "Historical data will be restored separately."
+
+      # 7. Run main cross-browser suite.
+      # Preserve the original test exit code.
       - name: Run cross-browser tests
-        run: npm test
+        id: cross_browser
+        shell: bash
+        run: |
+          set +e
+
+          npm test
+          test_exit_code=$?
+
+          echo "exit_code=$test_exit_code" >> "$GITHUB_OUTPUT"
+
+          exit "$test_exit_code"
         env:
           CI: "true"
           TEST_ENV: demo
@@ -64,23 +96,29 @@ jobs:
           HEADLESS: "true"
           WORKERS: "1"
 
-      # Step 7: Validate original healing audit
+      # 8. Validate the custom healing audit.
+      # Do not run this if the cross-browser suite failed.
       - name: Validate self-healing audit
-        if: success()
+        id: healing_audit
+        if: steps.cross_browser.outcome == 'success'
         run: node scripts/validate-healing-report.cjs
 
-      # Step 8: Run dedicated reliability tests
+      # 9. Run isolated reliability regression suite.
+      # It remains independent of the main Playwright config.
       - name: Run self-healing reliability tests
-        if: success()
+        id: reliability
+        if: steps.cross_browser.outcome == 'success' && steps.healing_audit.outcome == 'success'
         run: npm run test:reliability
         env:
           CI: "true"
           TEST_ENV: demo
           HEADLESS: "true"
 
-      # Step 9: Restore historical analytics
+      # 10. Restore previous historical analytics.
+      # A failed restoration must not silently corrupt history.
       - name: Restore previous AutoHeal history
-        if: always()
+        id: restore_history
+        if: always() && steps.prepare.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -137,8 +175,12 @@ jobs:
 
               if [ -n "$history_file" ]; then
 
-                if jq -e 'type == "object"' \
-                  "$history_file" >/dev/null; then
+                if jq -e '
+                  type == "object"
+                  and .schemaVersion == 1
+                  and (.runs | type == "array")
+                  and all(.runs[]; type == "object")
+                ' "$history_file" >/dev/null; then
 
                   cp "$history_file" \
                     reports/autoheal/history.json
@@ -148,7 +190,7 @@ jobs:
 
                   restored=true
                 else
-                  echo "Invalid history JSON in run $run_id"
+                  echo "Invalid historical data in run $run_id"
                 fi
 
               else
@@ -167,37 +209,125 @@ jobs:
 
           done <<< "$run_ids"
 
-          if [ "$restored" = false ]; then
+          if [ "$restored" = true ]; then
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored=false" >> "$GITHUB_OUTPUT"
             echo "No usable previous history found."
             echo "Starting a new historical dataset."
           fi
 
-      # Step 10: Generate historical analytics
+      # 11. Generate historical analytics only from the
+      # current workflow's valid execution summary.
       - name: Generate AutoHeal Historical Analytics
-        if: always()
+        id: analytics
+        if: always() && steps.prepare.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f reports/autoheal/summary.json ]; then
+          SUMMARY="reports/autoheal/summary.json"
 
-            echo "Generating execution history..."
-            node scripts/generate-history.cjs
-
-            echo "Analyzing test reliability..."
-            node scripts/analyze-reliability.cjs
-
-            echo "Generating analytics dashboard..."
-            node scripts/generate-analytics.cjs
-
-            echo "Historical analytics generated successfully."
-
-          else
-            echo "AutoHeal summary report not found."
-            echo "Skipping historical analytics generation."
+          if [ ! -f "$SUMMARY" ]; then
+            echo "No execution summary produced by this workflow."
+            echo "Skipping historical analytics."
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-      # Step 11: Upload main and reliability test artifacts
+          if ! node -e '
+            const fs = require("fs");
+            const summary = JSON.parse(
+              fs.readFileSync(process.argv[1], "utf8")
+            );
+
+            if (
+              summary.framework !== "AutoHeal QA" ||
+              !Array.isArray(summary.tests) ||
+              summary.tests.length === 0 ||
+              summary.totalAttempts !== summary.tests.length
+            ) {
+              process.exit(1);
+            }
+          ' "$SUMMARY"; then
+            echo "::error::Invalid AutoHeal execution summary."
+            exit 1
+          fi
+
+          echo "Generating execution history..."
+          node scripts/generate-history.cjs
+
+          echo "Analyzing test reliability..."
+          node scripts/analyze-reliability.cjs
+
+          echo "Generating analytics dashboard..."
+          node scripts/generate-analytics.cjs
+
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+          echo "Historical analytics generated successfully."
+
+      # 12. Publish a readable GitHub Actions summary.
+      - name: Publish CI execution summary
+        if: always()
+        shell: bash
+        env:
+          CROSS_BROWSER_RESULT: ${{ steps.cross_browser.outcome }}
+          CROSS_BROWSER_EXIT: ${{ steps.cross_browser.outputs.exit_code }}
+          RELIABILITY_RESULT: ${{ steps.reliability.outcome }}
+          ANALYTICS_RESULT: ${{ steps.analytics.outcome }}
+          HISTORY_RESTORED: ${{ steps.restore_history.outputs.restored }}
+        run: |
+          {
+            echo "## AutoHeal QA — CI Execution"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Branch | $GITHUB_REF_NAME |"
+            echo "| Commit | $GITHUB_SHA |"
+            echo "| Cross-browser result | $CROSS_BROWSER_RESULT |"
+            echo "| Cross-browser exit code | ${CROSS_BROWSER_EXIT:-not executed} |"
+            echo "| Reliability suite | $RELIABILITY_RESULT |"
+            echo "| Historical analytics | $ANALYTICS_RESULT |"
+            echo "| Previous history restored | ${HISTORY_RESTORED:-unknown} |"
+
+            if [ -f reports/autoheal/summary.json ]; then
+              node -e '
+                const fs = require("fs");
+
+                try {
+                  const s = JSON.parse(
+                    fs.readFileSync(
+                      "reports/autoheal/summary.json",
+                      "utf8"
+                    )
+                  );
+
+                  console.log(
+                    `| Test attempts | ${s.totalAttempts ?? "N/A"} |`
+                  );
+                  console.log(
+                    `| Passed attempts | ${s.passedAttempts ?? "N/A"} |`
+                  );
+                  console.log(
+                    `| Failed attempts | ${s.failedAttempts ?? "N/A"} |`
+                  );
+                  console.log(
+                    `| Healing events | ${s.healing?.totalEvents ?? 0} |`
+                  );
+                } catch (error) {
+                  console.log(
+                    "| Execution summary | Invalid JSON |"
+                  );
+                }
+              '
+            else
+              echo "| Execution summary | Not generated |"
+            fi
+
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 13. Upload test diagnostics even if tests fail.
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -211,7 +341,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # Step 12: Upload AutoHeal analytics
+      # 14. Upload execution summary and historical analytics.
       - name: Upload AutoHeal Analytics
         if: always()
         uses: actions/upload-artifact@v4
