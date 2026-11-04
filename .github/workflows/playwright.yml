@@ -19,14 +19,14 @@ permissions:
   contents: read
   actions: read
 
-# Reduce overlapping executions on the same source branch.
+# Prevent overlapping executions on the same branch.
 concurrency:
   group: autoheal-history-${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   playwright-tests:
-    name: TypeScript and Cross-Browser Tests
+    name: TypeScript, Cross-Browser and Reliability Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -54,9 +54,9 @@ jobs:
       - name: Validate TypeScript
         run: npm run typecheck
 
-      # Step 6: Run cross-browser tests
+      # Step 6: Run original cross-browser suite
       - name: Run cross-browser tests
-        run: npx playwright test
+        run: npm test
         env:
           CI: "true"
           TEST_ENV: demo
@@ -64,12 +64,21 @@ jobs:
           HEADLESS: "true"
           WORKERS: "1"
 
-      # Step 7: Validate self-healing audit
+      # Step 7: Validate original healing audit
       - name: Validate self-healing audit
         if: success()
         run: node scripts/validate-healing-report.cjs
 
-      # Step 8: Restore previous historical analytics
+      # Step 8: Run dedicated reliability tests
+      - name: Run self-healing reliability tests
+        if: success()
+        run: npm run test:reliability
+        env:
+          CI: "true"
+          TEST_ENV: demo
+          HEADLESS: "true"
+
+      # Step 9: Restore historical analytics
       - name: Restore previous AutoHeal history
         if: always()
         shell: bash
@@ -87,7 +96,6 @@ jobs:
           echo "Branch: $HISTORY_BRANCH"
           echo "Current run: $CURRENT_RUN_ID"
 
-          # Find completed runs on the same branch.
           run_ids=$(gh run list \
             --repo "$REPOSITORY" \
             --workflow playwright.yml \
@@ -106,7 +114,6 @@ jobs:
           while IFS= read -r run_id; do
             [ -n "$run_id" ] || continue
 
-            # Never restore from the current run.
             if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
               continue
             fi
@@ -115,7 +122,6 @@ jobs:
 
             temp_dir=$(mktemp -d)
 
-            # Download and extract the analytics artifact.
             if gh run download "$run_id" \
               --repo "$REPOSITORY" \
               --name autoheal-analytics \
@@ -123,7 +129,6 @@ jobs:
 
               history_file=""
 
-              # GitHub artifact paths may vary.
               if [ -f "$temp_dir/history.json" ]; then
                 history_file="$temp_dir/history.json"
               elif [ -f "$temp_dir/reports/autoheal/history.json" ]; then
@@ -132,7 +137,6 @@ jobs:
 
               if [ -n "$history_file" ]; then
 
-                # Validate JSON before restoring.
                 if jq -e 'type == "object"' \
                   "$history_file" >/dev/null; then
 
@@ -168,7 +172,7 @@ jobs:
             echo "Starting a new historical dataset."
           fi
 
-      # Step 9: Generate historical reliability analytics
+      # Step 10: Generate historical analytics
       - name: Generate AutoHeal Historical Analytics
         if: always()
         shell: bash
@@ -193,7 +197,7 @@ jobs:
             echo "Skipping historical analytics generation."
           fi
 
-      # Step 10: Upload Playwright reports and traces
+      # Step 11: Upload main and reliability test artifacts
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -201,11 +205,13 @@ jobs:
           name: autoheal-qa-test-results
           path: |
             reports/html/
+            reports/junit/
+            reports/reliability-tests/
             test-results/
           if-no-files-found: warn
           retention-days: 7
 
-      # Step 11: Upload AutoHeal analytics
+      # Step 12: Upload AutoHeal analytics
       - name: Upload AutoHeal Analytics
         if: always()
         uses: actions/upload-artifact@v4

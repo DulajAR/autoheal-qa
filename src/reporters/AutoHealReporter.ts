@@ -9,10 +9,6 @@ import type {
 import fs from "node:fs";
 import path from "node:path";
 
-/**
- * Structured audit event generated when
- * a broken locator is successfully recovered.
- */
 export type HealingAuditEvent = {
   event: "LOCATOR_HEALED";
   timestamp: string;
@@ -22,11 +18,6 @@ export type HealingAuditEvent = {
   confidence: number;
 };
 
-/**
- * Information about a single test attempt.
- *
- * Retries are recorded separately.
- */
 export type TestRecord = {
   title: string;
   project: string;
@@ -37,9 +28,6 @@ export type TestRecord = {
   healingEvents: HealingAuditEvent[];
 };
 
-/**
- * Summary of successful locator recoveries.
- */
 export type HealingSummary = {
   totalEvents: number;
   healedAttempts: number;
@@ -47,41 +35,18 @@ export type HealingSummary = {
   events: HealingAuditEvent[];
 };
 
-/**
- * AutoHealReporter
- *
- * Custom Playwright reporter responsible for:
- *
- * - Recording test execution results
- * - Capturing locator healing events
- * - Tracking confidence scores
- * - Associating events with test attempts
- * - Generating structured JSON reports
- */
 class AutoHealReporter implements Reporter {
   private readonly records: TestRecord[] = [];
 
   private startedAt = new Date();
 
-  /**
-   * Called when test execution begins.
-   */
   onBegin(): void {
     this.records.length = 0;
-
     this.startedAt = new Date();
 
-    console.log(
-      "[AutoHeal QA] Test execution started"
-    );
+    console.log("[AutoHeal QA] Reporter initialized");
   }
 
-  /**
-   * Validate an incoming healing event.
-   *
-   * Reporter attachments may contain arbitrary
-   * JSON, so verify the structure before use.
-   */
   private isHealingAuditEvent(
     value: unknown
   ): value is HealingAuditEvent {
@@ -92,10 +57,7 @@ class AutoHealReporter implements Reporter {
       return false;
     }
 
-    const event = value as Record<
-      string,
-      unknown
-    >;
+    const event = value as Record<string, unknown>;
 
     return (
       event.event === "LOCATOR_HEALED" &&
@@ -110,10 +72,6 @@ class AutoHealReporter implements Reporter {
     );
   }
 
-  /**
-   * Extract healing audit events from
-   * Playwright test attachments.
-   */
   private extractHealingEvents(
     result: TestResult
   ): HealingAuditEvent[] {
@@ -121,8 +79,7 @@ class AutoHealReporter implements Reporter {
 
     for (const attachment of result.attachments) {
       if (
-        attachment.name !==
-        "autoheal-healing-event"
+        attachment.name !== "autoheal-healing-event"
       ) {
         continue;
       }
@@ -131,9 +88,7 @@ class AutoHealReporter implements Reporter {
         let raw: string;
 
         if (attachment.body) {
-          raw = attachment.body.toString(
-            "utf8"
-          );
+          raw = attachment.body.toString("utf8");
         } else if (attachment.path) {
           raw = fs.readFileSync(
             attachment.path,
@@ -145,9 +100,7 @@ class AutoHealReporter implements Reporter {
 
         const parsed: unknown = JSON.parse(raw);
 
-        if (
-          this.isHealingAuditEvent(parsed)
-        ) {
+        if (this.isHealingAuditEvent(parsed)) {
           events.push(parsed);
         } else {
           console.warn(
@@ -165,44 +118,29 @@ class AutoHealReporter implements Reporter {
     return events;
   }
 
-  /**
-   * Called after each test attempt.
-   */
   onTestEnd(
     test: TestCase,
     result: TestResult
   ): void {
-    const healingEvents =
-      this.extractHealingEvents(result);
-
-    const record: TestRecord = {
+    this.records.push({
       title: test.titlePath().join(" > "),
-      project:
-        test.parent.project()?.name ??
-        "unknown",
+      project: test.parent.project()?.name ?? "unknown",
       status: result.status,
       durationMs: result.duration,
       retry: result.retry,
       error: result.error?.message,
-      healingEvents,
-    };
-
-    this.records.push(record);
+      healingEvents: this.extractHealingEvents(result),
+    });
   }
 
-  /**
-   * Calculate aggregate healing statistics.
-   */
   private buildHealingSummary(): HealingSummary {
     const events = this.records.flatMap(
-      (record) => record.healingEvents
+      record => record.healingEvents
     );
 
-    const healedAttempts =
-      this.records.filter(
-        (record) =>
-          record.healingEvents.length > 0
-      ).length;
+    const healedAttempts = this.records.filter(
+      record => record.healingEvents.length > 0
+    ).length;
 
     const totalEvents = events.length;
 
@@ -211,8 +149,7 @@ class AutoHealReporter implements Reporter {
         ? Number(
             (
               events.reduce(
-                (sum, event) =>
-                  sum + event.confidence,
+                (sum, event) => sum + event.confidence,
                 0
               ) / totalEvents
             ).toFixed(3)
@@ -227,67 +164,52 @@ class AutoHealReporter implements Reporter {
     };
   }
 
-  /**
-   * Called after all tests finish.
-   */
   onEnd(result: FullResult): void {
-    const finishedAt = new Date();
+    // Test discovery does not produce test attempts.
+    // Never overwrite a real execution summary with
+    // an empty report.
+    if (this.records.length === 0) {
+      console.log(
+        "[AutoHeal QA] No test attempts recorded. " +
+        "Preserving existing execution summary."
+      );
+      return;
+    }
 
-    const healing =
-      this.buildHealingSummary();
+    const finishedAt = new Date();
+    const healing = this.buildHealingSummary();
 
     const summary = {
       framework: "AutoHeal QA",
-
-      startedAt:
-        this.startedAt.toISOString(),
-
-      finishedAt:
-        finishedAt.toISOString(),
-
+      startedAt: this.startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
       overallStatus: result.status,
+      totalAttempts: this.records.length,
 
-      totalAttempts:
-        this.records.length,
+      passedAttempts: this.records.filter(
+        record => record.status === "passed"
+      ).length,
 
-      passedAttempts:
-        this.records.filter(
-          (record) =>
-            record.status === "passed"
-        ).length,
+      failedAttempts: this.records.filter(
+        record => record.status === "failed"
+      ).length,
 
-      failedAttempts:
-        this.records.filter(
-          (record) =>
-            record.status === "failed"
-        ).length,
+      skippedAttempts: this.records.filter(
+        record => record.status === "skipped"
+      ).length,
 
-      skippedAttempts:
-        this.records.filter(
-          (record) =>
-            record.status === "skipped"
-        ).length,
+      timedOutAttempts: this.records.filter(
+        record => record.status === "timedOut"
+      ).length,
 
-      timedOutAttempts:
-        this.records.filter(
-          (record) =>
-            record.status === "timedOut"
-        ).length,
-
-      interruptedAttempts:
-        this.records.filter(
-          (record) =>
-            record.status === "interrupted"
-        ).length,
+      interruptedAttempts: this.records.filter(
+        record => record.status === "interrupted"
+      ).length,
 
       healing,
-
       tests: this.records,
     };
 
-    /**
-     * Create report directory.
-     */
     const outputDirectory = path.resolve(
       "reports",
       "autoheal"
@@ -297,27 +219,30 @@ class AutoHealReporter implements Reporter {
       recursive: true,
     });
 
-    /**
-     * Write JSON report.
-     */
     const outputFile = path.join(
       outputDirectory,
       "summary.json"
     );
 
-    fs.writeFileSync(
-      outputFile,
-      JSON.stringify(
-        summary,
-        null,
-        2
-      ),
-      "utf8"
+    const tempFile = path.join(
+      outputDirectory,
+      `summary.${process.pid}.tmp`
     );
 
-    /**
-     * Display summary in terminal.
-     */
+    try {
+      fs.writeFileSync(
+        tempFile,
+        JSON.stringify(summary, null, 2) + "\n",
+        "utf8"
+      );
+
+      fs.renameSync(tempFile, outputFile);
+    } finally {
+      if (fs.existsSync(tempFile)) {
+        fs.rmSync(tempFile, { force: true });
+      }
+    }
+
     console.log(
       `[AutoHeal QA] Report saved: ${outputFile}`
     );
@@ -342,9 +267,7 @@ class AutoHealReporter implements Reporter {
       `[AutoHeal QA] Healed attempts: ${healing.healedAttempts}`
     );
 
-    if (
-      healing.averageConfidence !== null
-    ) {
+    if (healing.averageConfidence !== null) {
       console.log(
         `[AutoHeal QA] Average healing confidence: ${healing.averageConfidence}`
       );
