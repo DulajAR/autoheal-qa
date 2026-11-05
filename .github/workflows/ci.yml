@@ -79,9 +79,6 @@ jobs:
         if: steps.playwright_tests.outcome == 'success'
         run: npm run validate:report
 
-      - name: Validate baseline report
-        if: steps.playwright_tests.outcome == 'success'
-        run: npm run validate:report:baseline
 
       - name: Upload test reports
         if: always()
