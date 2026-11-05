@@ -2,8 +2,8 @@
 import type { Page } from "@playwright/test";
 
 import {
-  SelfHealingLocator,
-} from "./SelfHealingLocator";
+  PolicyEnforcedSelfHealingLocator,
+} from "./PolicyEnforcedSelfHealingLocator";
 
 import {
   loadAIRuntimeConfig,
@@ -22,7 +22,7 @@ import type {
 } from "../ai/AIRuntimeFactory";
 
 export type SelfHealingRuntime = {
-  locator: SelfHealingLocator;
+  locator: PolicyEnforcedSelfHealingLocator;
   config: AIRuntimeConfig;
 };
 
@@ -39,7 +39,11 @@ export function createSelfHealingRuntime(
   );
 
   return {
-    locator: new SelfHealingLocator(page, provider),
+    locator: new PolicyEnforcedSelfHealingLocator(
+      page,
+      provider,
+      config
+    ),
     config,
   };
 }
