@@ -26,14 +26,14 @@ assert.equal(
 
 assert.equal(
   report.healing.totalEvents,
-  6,
-  "Expected six healing events"
+  9,
+  "Expected nine healing events"
 );
 
 assert.equal(
   report.healing.healedAttempts,
-  6,
-  "Expected six healed attempts"
+  9,
+  "Expected nine healed attempts"
 );
 
 assert.equal(

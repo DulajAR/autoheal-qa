@@ -13,7 +13,10 @@ export type HealingAuditEvent = {
 
 export class HealingAudit {
   static record(
-    event: Omit<HealingAuditEvent, "event" | "timestamp">
+    event: Omit<
+      HealingAuditEvent,
+      "event" | "timestamp"
+    >
   ): void {
     const auditEvent: HealingAuditEvent = {
       event: "LOCATOR_HEALED",
@@ -28,20 +31,19 @@ export class HealingAudit {
       confidence: auditEvent.confidence,
     });
 
-    // Attach the event to the currently running Playwright test.
-    // This allows the reporter to read the audit record
-    // across Playwright worker processes.
     try {
       const testInfo = test.info();
 
       testInfo.attachments.push({
         name: "autoheal-healing-event",
         contentType: "application/json",
-        body: Buffer.from(JSON.stringify(auditEvent), "utf8"),
+        body: Buffer.from(
+          JSON.stringify(auditEvent),
+          "utf8"
+        ),
       });
     } catch {
-      // HealingAudit can also be called outside a Playwright test.
-      // Logging still works when test context is unavailable.
+      // Allow logging outside Playwright test context.
     }
   }
 }
