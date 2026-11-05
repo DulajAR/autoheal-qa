@@ -14,20 +14,28 @@ import {
   isSafeAISelector,
 } from "./AIRequestSanitizer";
 
+import type {
+  AIProviderDiagnostics,
+  AIProviderErrorCode,
+} from "./AIProviderDiagnostics";
+
+import {
+  classifyHTTPStatus,
+  classifyProviderFailure,
+} from "./AIProviderErrorClassifier";
+
 /**
- * AutoHeal QA
- * OpenAI Provider
- * Phase 4.0.6D
- *
- * Uses shared AI request sanitization.
+ * AutoHeal QA - OpenAI Provider
+ * Phase 4.0.7 - Provider Observability
  *
  * Security:
  * - Explicit external request authorization
- * - Sanitized DOM snapshots
- * - Limited response size
- * - Strict candidate validation
+ * - Sanitized DOM context
+ * - Bounded response size
+ * - Strict locator validation
  * - Request timeout
  * - No automatic selector execution
+ * - Safe, optional diagnostics
  */
 
 const API_URL =
@@ -41,11 +49,9 @@ type FetchFunction = typeof fetch;
 export type OpenAIProviderOptions = {
   allowExternalRequests: boolean;
   fetchImpl?: FetchFunction;
+  diagnostics?: AIProviderDiagnostics;
 };
 
-/**
- * Validate an unknown value as a plain object.
- */
 function isRecord(
   value: unknown
 ): value is Record<string, unknown> {
@@ -56,9 +62,6 @@ function isRecord(
   );
 }
 
-/**
- * Read a provider response with a byte limit.
- */
 async function readLimitedResponse(
   response: Response
 ): Promise<string> {
@@ -67,15 +70,13 @@ async function readLimitedResponse(
   }
 
   const reader = response.body.getReader();
-
   const chunks: Uint8Array[] = [];
 
   let total = 0;
 
   try {
     while (true) {
-      const { done, value } =
-        await reader.read();
+      const { done, value } = await reader.read();
 
       if (done) {
         break;
@@ -84,9 +85,7 @@ async function readLimitedResponse(
       total += value.byteLength;
 
       if (total > MAX_RESPONSE_BYTES) {
-        throw new Error(
-          "RESPONSE_TOO_LARGE"
-        );
+        throw new Error("RESPONSE_TOO_LARGE");
       }
 
       chunks.push(value);
@@ -102,22 +101,13 @@ async function readLimitedResponse(
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/**
- * Parse and validate OpenAI locator suggestions.
- *
- * The response is untrusted.
- * Suggestions are returned as data only.
- */
 function parseCandidates(
   raw: string
 ): AILocatorCandidate[] {
-  const envelope: unknown =
-    JSON.parse(raw);
+  const envelope: unknown = JSON.parse(raw);
 
   if (!isRecord(envelope)) {
-    throw new Error(
-      "INVALID_ENVELOPE"
-    );
+    throw new Error("INVALID_ENVELOPE");
   }
 
   const choices = envelope.choices;
@@ -126,9 +116,7 @@ function parseCandidates(
     !Array.isArray(choices) ||
     choices.length === 0
   ) {
-    throw new Error(
-      "INVALID_ENVELOPE"
-    );
+    throw new Error("INVALID_ENVELOPE");
   }
 
   const first: unknown = choices[0];
@@ -137,31 +125,23 @@ function parseCandidates(
     !isRecord(first) ||
     !isRecord(first.message)
   ) {
-    throw new Error(
-      "INVALID_ENVELOPE"
-    );
+    throw new Error("INVALID_ENVELOPE");
   }
 
   const content = first.message.content;
 
   if (typeof content !== "string") {
-    throw new Error(
-      "INVALID_CONTENT"
-    );
+    throw new Error("INVALID_CONTENT");
   }
 
-  const parsed: unknown =
-    JSON.parse(content);
+  const parsed: unknown = JSON.parse(content);
 
   if (
     !isRecord(parsed) ||
     !Array.isArray(parsed.candidates) ||
-    parsed.candidates.length >
-      MAX_CANDIDATES
+    parsed.candidates.length > MAX_CANDIDATES
   ) {
-    throw new Error(
-      "INVALID_CANDIDATES"
-    );
+    throw new Error("INVALID_CANDIDATES");
   }
 
   return parsed.candidates.map(
@@ -174,9 +154,7 @@ function parseCandidates(
         item.confidence < 0 ||
         item.confidence > 1
       ) {
-        throw new Error(
-          "INVALID_CANDIDATE"
-        );
+        throw new Error("INVALID_CANDIDATE");
       }
 
       return {
@@ -187,12 +165,6 @@ function parseCandidates(
   );
 }
 
-/**
- * OpenAI locator suggestion provider.
- *
- * The provider never performs Playwright
- * clicks, typing, or other browser actions.
- */
 export class OpenAIProvider implements AIProvider {
   readonly name = "openai";
 
@@ -202,22 +174,51 @@ export class OpenAIProvider implements AIProvider {
     private readonly config: ProductionAIConfig,
     private readonly options: OpenAIProviderOptions
   ) {
-    this.fetchImpl =
-      options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  /**
-   * Suggest replacement locators.
-   *
-   * Network access is possible only when
-   * explicitly authorized and invoked.
-   */
   async suggestLocators(
     request: AILocatorRequest
   ): Promise<AILocatorCandidate[]> {
-    if (
-      !this.options.allowExternalRequests
-    ) {
+    const startedAt = performance.now();
+
+    let errorCode: AIProviderErrorCode =
+      "UNKNOWN_ERROR";
+
+    let recorded = false;
+
+    const record = (
+      outcome: "success" | "failure",
+      candidateCount: number
+    ): void => {
+      if (recorded) {
+        return;
+      }
+
+      recorded = true;
+
+      try {
+        this.options.diagnostics?.record({
+          provider: "openai",
+          outcome,
+          errorCode:
+            outcome === "success"
+              ? "NONE"
+              : errorCode,
+          durationMs:
+            performance.now() - startedAt,
+          candidateCount,
+        });
+      } catch {
+        // Diagnostics must never change
+        // the provider's public behavior.
+      }
+    };
+
+    if (!this.options.allowExternalRequests) {
+      errorCode = "UNAUTHORIZED";
+      record("failure", 0);
+
       throw new Error(
         "EXTERNAL_AI_NOT_AUTHORIZED"
       );
@@ -226,20 +227,21 @@ export class OpenAIProvider implements AIProvider {
     let prepared: AILocatorRequest;
 
     try {
-      prepared =
-        prepareAIRequest(request);
+      prepared = prepareAIRequest(request);
     } catch {
-      throw new Error(
-        "INVALID_AI_REQUEST"
-      );
+      errorCode = "INVALID_REQUEST";
+      record("failure", 0);
+
+      throw new Error("INVALID_AI_REQUEST");
     }
 
-    const controller =
-      new AbortController();
+    const controller = new AbortController();
 
     let timeout:
       | ReturnType<typeof setTimeout>
       | undefined;
+
+    let timedOut = false;
 
     try {
       const body = JSON.stringify({
@@ -271,50 +273,85 @@ export class OpenAIProvider implements AIProvider {
               "Return an empty array when uncertain.",
             ].join(" "),
           },
-
           {
             role: "user",
-
-            content:
-              JSON.stringify(prepared),
+            content: JSON.stringify(prepared),
           },
         ],
       });
 
       const operation = (async () => {
-        const response =
-          await this.fetchImpl(
+        let response: Response;
+
+        try {
+          response = await this.fetchImpl(
             API_URL,
             {
               method: "POST",
-
               headers: {
                 Authorization:
                   `Bearer ${this.config.apiKey}`,
-
                 "Content-Type":
                   "application/json",
               },
-
               body,
-
-              signal:
-                controller.signal,
+              signal: controller.signal,
             }
           );
+        } catch {
+          errorCode = timedOut
+            ? "TIMEOUT"
+            : "NETWORK_ERROR";
+
+          throw new Error(
+            "PROVIDER_NETWORK_ERROR"
+          );
+        }
 
         if (!response.ok) {
+          errorCode = classifyHTTPStatus(
+            response.status
+          );
+
           throw new Error(
             "PROVIDER_HTTP_ERROR"
           );
         }
 
-        const raw =
-          await readLimitedResponse(
+        let raw: string;
+
+        try {
+          raw = await readLimitedResponse(
             response
           );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message ===
+              "RESPONSE_TOO_LARGE"
+          ) {
+            errorCode =
+              classifyProviderFailure(
+                "RESPONSE_TOO_LARGE"
+              );
+          } else {
+            errorCode = timedOut
+              ? "TIMEOUT"
+              : "INVALID_RESPONSE";
+          }
 
-        return parseCandidates(raw);
+          throw error;
+        }
+
+        try {
+          return parseCandidates(raw);
+        } catch {
+          errorCode = "INVALID_RESPONSE";
+
+          throw new Error(
+            "PROVIDER_INVALID_RESPONSE"
+          );
+        }
       })();
 
       const deadline =
@@ -322,6 +359,9 @@ export class OpenAIProvider implements AIProvider {
           (_, reject) => {
             timeout = setTimeout(
               () => {
+                timedOut = true;
+                errorCode = "TIMEOUT";
+
                 controller.abort();
 
                 reject(
@@ -335,20 +375,29 @@ export class OpenAIProvider implements AIProvider {
           }
         );
 
-      return await Promise.race([
-        operation,
-        deadline,
-      ]);
+      const candidates =
+        await Promise.race([
+          operation,
+          deadline,
+        ]);
+
+      record("success", candidates.length);
+
+      return candidates;
     } catch {
-      // Do not expose API keys,
-      // DOM snapshots, or raw responses.
+      if (timedOut) {
+        errorCode = "TIMEOUT";
+      }
+
+      record("failure", 0);
+
+      // Never expose credentials, DOM
+      // context, or provider responses.
       throw new Error(
         "OPENAI_PROVIDER_FAILED"
       );
     } finally {
-      if (
-        timeout !== undefined
-      ) {
+      if (timeout !== undefined) {
         clearTimeout(timeout);
       }
 
