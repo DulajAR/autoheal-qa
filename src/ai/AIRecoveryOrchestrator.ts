@@ -6,9 +6,21 @@ import type {
   AILocatorCandidate,
 } from "./AIProvider";
 
-import { DOMContextExtractor } from "./DOMContextExtractor";
-import { AIRequestBuilder } from "./AIRequestBuilder";
-import { AILocatorValidator } from "./AILocatorValidator";
+import {
+  DOMContextExtractor,
+} from "./DOMContextExtractor";
+
+import {
+  AIRequestBuilder,
+} from "./AIRequestBuilder";
+
+import {
+  AILocatorValidator,
+} from "./AILocatorValidator";
+
+import {
+  isAuthorizedProductionProvider,
+} from "./AIProviderFactory";
 
 import type {
   AIRecoveryOptions,
@@ -16,18 +28,23 @@ import type {
 } from "./AIRecoveryTypes";
 
 /**
- * Coordinates mock AI-assisted locator recovery.
+ * Coordinates AI-assisted locator recovery.
  *
- * Phase 3.5:
- * - Advisory suggestions only
- * - No automatic element interactions
- * - No external AI providers
- * - Disabled by default
- * - Fail-closed error handling
+ * Security rules:
+ * - Disabled by default.
+ * - Supports existing mock providers.
+ * - Production OpenAI providers require factory authorization.
+ * - DOM context is sanitized before provider requests.
+ * - Candidate selectors are validated.
+ * - Suggestions are advisory only.
+ * - Provider errors fail safely.
  */
 export class AIRecoveryOrchestrator {
   private readonly extractor: DOMContextExtractor;
-  private readonly requestBuilder = new AIRequestBuilder();
+
+  private readonly requestBuilder =
+    new AIRequestBuilder();
+
   private readonly validator: AILocatorValidator;
 
   constructor(
@@ -53,7 +70,7 @@ export class AIRecoveryOrchestrator {
     const maxCandidates =
       options.maxCandidates ?? 5;
 
-    // Validate configuration.
+    // Validate recovery configuration.
     if (
       !Number.isFinite(minimumConfidence) ||
       minimumConfidence < 0 ||
@@ -99,14 +116,21 @@ export class AIRecoveryOrchestrator {
       ...(reason ? { reason } : {}),
     });
 
-    // AI recovery is explicitly opt-in.
+    // AI recovery must be explicitly enabled.
     if (!enabled || !this.provider) {
       return createResult("DISABLED");
     }
 
-    // Phase 3.5 allows only trusted local mock providers.
-    // Provider name is not a security authentication mechanism.
-    if (providerName !== "mock") {
+    // Keep existing mock-provider compatibility.
+    const isMockProvider =
+      providerName === "mock";
+
+    // Production providers must have been
+    // constructed by the authorized factory.
+    const isAuthorizedOpenAI =
+      isAuthorizedProductionProvider(this.provider);
+
+    if (!isMockProvider && !isAuthorizedOpenAI) {
       return createResult(
         "DISABLED",
         "PROVIDER_NOT_ALLOWED"
@@ -116,20 +140,20 @@ export class AIRecoveryOrchestrator {
     let evaluatedCandidates = 0;
 
     try {
-      // Step 1: Extract a bounded DOM context.
+      // Step 1: Extract bounded DOM context.
       const context = await this.extractor.extract({
         maxElements: 100,
         maxTextLength: 120,
       });
 
-      // Step 2: Sanitize the context and build
-      // a size-limited request.
+      // Step 2: Build a sanitized, bounded request.
       const request = this.requestBuilder.build(
         primarySelector,
         context
       );
 
-      // Step 3: Obtain suggestions from the mock provider.
+      // Step 3: Ask the authorized provider
+      // for candidate selectors.
       let timeoutHandle:
         | ReturnType<typeof setTimeout>
         | undefined;
@@ -154,7 +178,7 @@ export class AIRecoveryOrchestrator {
         }
       }
 
-      // Step 4: Validate the provider response.
+      // Step 4: Validate provider response.
       if (!Array.isArray(candidates)) {
         return createResult(
           "FAILED",
@@ -169,11 +193,11 @@ export class AIRecoveryOrchestrator {
         );
       }
 
-      // Limit the number of candidates evaluated.
+      // Limit evaluated candidates.
       const boundedCandidates =
         candidates.slice(0, maxCandidates);
 
-      // Evaluate higher-confidence candidates first.
+      // Highest-confidence candidates first.
       const sortedCandidates = [
         ...boundedCandidates,
       ].sort((a, b) => {
@@ -192,7 +216,7 @@ export class AIRecoveryOrchestrator {
         return right - left;
       });
 
-      // Step 5: Validate each suggested selector.
+      // Step 5: Validate suggested selectors.
       for (const candidate of sortedCandidates) {
         evaluatedCandidates++;
 
@@ -218,8 +242,8 @@ export class AIRecoveryOrchestrator {
         }
 
         // Advisory result only.
-        // Do not click, fill, or automatically use
-        // this selector.
+        // Do not click, fill, or automatically
+        // execute this selector.
         return {
           status: "SUGGESTED",
           provider: providerName,
@@ -236,8 +260,8 @@ export class AIRecoveryOrchestrator {
         evaluatedCandidates
       );
     } catch {
-      // Never expose raw DOM snapshots,
-      // provider errors, or request payloads.
+      // Never expose raw provider errors,
+      // DOM snapshots, or request payloads.
       return createResult(
         "FAILED",
         "RECOVERY_PIPELINE_FAILED",

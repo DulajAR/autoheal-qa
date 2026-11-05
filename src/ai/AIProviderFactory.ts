@@ -22,6 +22,19 @@ export type AIProviderFactoryOptions = {
   fetchImpl?: typeof fetch;
 };
 
+// Tracks production providers constructed through
+// this factory with explicit authorization.
+const authorizedProviders = new WeakSet<AIProvider>();
+
+export function isAuthorizedProductionProvider(
+  provider: AIProvider
+): boolean {
+  return (
+    provider instanceof OpenAIProvider &&
+    authorizedProviders.has(provider)
+  );
+}
+
 export function createAIProvider(
   providerType: AIProviderType,
   options: AIProviderFactoryOptions = {}
@@ -43,15 +56,17 @@ export function createAIProvider(
       const config =
         options.config ?? loadProductionAIConfig();
 
-      return new OpenAIProvider(config, {
+      const provider = new OpenAIProvider(config, {
         allowExternalRequests: true,
         fetchImpl: options.fetchImpl,
       });
+
+      authorizedProviders.add(provider);
+
+      return provider;
     }
 
     default:
-      throw new Error(
-        "UNSUPPORTED_AI_PROVIDER"
-      );
+      throw new Error("UNSUPPORTED_AI_PROVIDER");
   }
 }
