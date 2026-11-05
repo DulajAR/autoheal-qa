@@ -1,8 +1,14 @@
 
 import type { Locator, Page } from "@playwright/test";
+
 import { environment } from "../../config/environment";
 import { Logger } from "./Logger";
 import { HealingAudit } from "./HealingAudit";
+
+import type { AIProvider } from "../ai/AIProvider";
+import { AIRecoveryOrchestrator } from "../ai/AIRecoveryOrchestrator";
+import { AIRecoveryAudit } from "../ai/AIRecoveryAudit";
+import type { AIRecoveryOptions } from "../ai/AIRecoveryTypes";
 
 export type LocatorStrategy = {
   name: string;
@@ -14,19 +20,24 @@ export type HealingOptions = {
   timeoutMs?: number;
   minimumConfidence?: number;
   enabled?: boolean;
+  aiRecovery?: AIRecoveryOptions;
 };
 
 export class SelfHealingLocator {
-  constructor(private readonly page: Page) {}
+  private readonly aiRecovery: AIRecoveryOrchestrator;
+
+  constructor(
+    private readonly page: Page,
+    aiProvider: AIProvider | null = null
+  ) {
+    this.aiRecovery = new AIRecoveryOrchestrator(
+      page,
+      aiProvider
+    );
+  }
 
   /**
-   * Finds a locator that matches exactly one visible element.
-   *
-   * Returns null when:
-   * - The element does not exist.
-   * - The element is not visible.
-   * - Multiple elements match the selector.
-   * - The timeout expires.
+   * Finds exactly one visible element.
    */
   private async findUniqueVisible(
     selector: string,
@@ -57,8 +68,12 @@ export class SelfHealingLocator {
   }
 
   /**
-   * Resolves the primary locator or attempts deterministic
-   * self-healing using trusted fallback strategies.
+   * Resolve a locator using:
+   * 1. Primary selector
+   * 2. Trusted deterministic fallbacks
+   * 3. Optional advisory AI recovery
+   *
+   * AI suggestions are never executed automatically.
    */
   async resolve(
     primarySelector: string,
@@ -71,10 +86,13 @@ export class SelfHealingLocator {
       options.minimumConfidence ?? 0.85;
 
     const enabled =
-      options.enabled ?? environment.selfHealingEnabled;
+      options.enabled ??
+      environment.selfHealingEnabled;
 
-    // Validate configuration.
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    if (
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0
+    ) {
       throw new Error(
         "timeoutMs must be a positive number"
       );
@@ -90,7 +108,7 @@ export class SelfHealingLocator {
       );
     }
 
-    // Step 1: Always attempt the primary locator first.
+    // STEP 1: Primary selector.
     const primary = await this.findUniqueVisible(
       primarySelector,
       timeoutMs
@@ -104,17 +122,16 @@ export class SelfHealingLocator {
       `Primary locator unavailable: ${primarySelector}`
     );
 
-    // Step 2: Check whether self-healing is enabled.
+    // STEP 2: Respect self-healing configuration.
     if (!enabled) {
       const message =
         `Primary locator unavailable and self-healing disabled: ${primarySelector}`;
 
       Logger.error(message);
-
       throw new Error(message);
     }
 
-    // Step 3: Filter and prioritize trusted fallbacks.
+    // STEP 3: Trusted fallback strategies.
     const candidates = [...alternatives]
       .filter(
         (strategy) =>
@@ -123,10 +140,10 @@ export class SelfHealingLocator {
           strategy.confidence <= 1
       )
       .sort(
-        (a, b) => b.confidence - a.confidence
+        (a, b) =>
+          b.confidence - a.confidence
       );
 
-    // Step 4: Attempt recovery using fallback strategies.
     for (const candidate of candidates) {
       const recovered = await this.findUniqueVisible(
         candidate.selector,
@@ -137,9 +154,6 @@ export class SelfHealingLocator {
         continue;
       }
 
-      // Step 5: Record the successful recovery.
-      // HealingAudit handles the structured event,
-      // logging, and Playwright test attachment.
       HealingAudit.record({
         primarySelector,
         recoveredSelector: candidate.selector,
@@ -150,7 +164,21 @@ export class SelfHealingLocator {
       return recovered;
     }
 
-    // Step 6: Fail safely when recovery is unsuccessful.
+    // STEP 4: Advisory AI recovery.
+    if (options.aiRecovery?.enabled === true) {
+      try {
+        const result = await this.aiRecovery.suggest(
+          primarySelector,
+          options.aiRecovery
+        );
+
+        AIRecoveryAudit.record(result);
+      } catch {
+        Logger.warn("AI_RECOVERY_PIPELINE_ERROR");
+      }
+    }
+
+    // STEP 5: Controlled failure.
     const message =
       `Self-healing failed for locator: ${primarySelector}`;
 
