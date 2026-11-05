@@ -22,7 +22,11 @@ testMatch: "**/*.spec.ts",
    * Exclude isolated reliability tests from
    * the main cross-browser suite.
    */
-  testIgnore: ["**/reliability/**"],
+  testIgnore: [
+  "**/reliability/**",
+  "**/live-ai/**",
+  "**/gemini/**",
+],
 
   /**
    * Enable parallel test execution.

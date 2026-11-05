@@ -24,6 +24,8 @@
     "test:reporting": "node --test tests/reporting/*.test.cjs",
     "validate": "npm run typecheck && npm run test:list",
     "validate:report": "node scripts/validate-healing-report.cjs",
+    "test:gemini:smoke": "playwright test --config=playwright.gemini-smoke.config.ts",
+    "test:ai:all": "npm run test:ai:smoke && npm run test:gemini:smoke",
     "validate:report:baseline": "node scripts/validate-healing-report.cjs --baseline",
     "validate:reliability": "npm run typecheck && npm run test:reliability",
     "test:ai:smoke": "playwright test --config=playwright.ai-smoke.config.ts --grep-invert AI-SMOKE-003",
