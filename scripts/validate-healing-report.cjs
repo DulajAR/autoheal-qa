@@ -5,167 +5,20 @@ const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 
-const reportPath = path.resolve(
-  "reports",
-  "autoheal",
-  "summary.json"
-);
+const args = process.argv.slice(2);
+const baseline = args.includes("--baseline");
+const paths = args.filter(arg => arg !== "--baseline");
 
-assert.ok(
-  fs.existsSync(reportPath),
-  "AutoHeal report does not exist"
-);
-
-const report = JSON.parse(
-  fs.readFileSync(reportPath, "utf8")
-);
-
-// --------------------------------------------------
-// 1. Overall execution validation
-// --------------------------------------------------
-
-assert.equal(
-  report.overallStatus,
-  "passed",
-  "Test execution must pass"
-);
-
-assert.ok(
-  Array.isArray(report.tests),
-  "Test records must be an array"
-);
-
-// --------------------------------------------------
-// 2. Deterministic healing validation
-// --------------------------------------------------
-
-assert.ok(
-  report.healing,
-  "Deterministic healing summary is missing"
-);
-
-assert.equal(
-  report.healing.totalEvents,
-  9,
-  "Expected nine deterministic healing events"
-);
-
-assert.equal(
-  report.healing.healedAttempts,
-  9,
-  "Expected nine healed attempts"
-);
-
-assert.equal(
-  report.healing.averageConfidence,
-  0.95,
-  "Unexpected deterministic healing confidence"
-);
-
-assert.ok(
-  Array.isArray(report.healing.events),
-  "Healing events must be an array"
-);
-
-assert.equal(
-  report.healing.events.length,
-  report.healing.totalEvents,
-  "Healing event count mismatch"
-);
-
-for (const event of report.healing.events) {
-  assert.equal(
-    event.event,
-    "LOCATOR_HEALED"
+if (paths.length > 1) {
+  console.error(
+    "Usage: node scripts/validate-healing-report.cjs [report.json] [--baseline]"
   );
-
-  assert.ok(event.primarySelector);
-  assert.ok(event.recoveredSelector);
-  assert.ok(event.strategy);
-
-  assert.ok(
-    event.confidence >= 0.85 &&
-    event.confidence <= 1,
-    "Invalid deterministic healing confidence"
-  );
+  process.exit(1);
 }
 
-// --------------------------------------------------
-// 3. AI recovery reporting validation
-// --------------------------------------------------
-
-assert.ok(
-  report.aiRecovery,
-  "AI recovery summary is missing"
+const reportPath = path.resolve(
+  paths[0] || "reports/autoheal/summary.json"
 );
-
-const ai = report.aiRecovery;
-
-assert.equal(
-  ai.totalEvaluations,
-  6,
-  "Expected six AI recovery evaluations"
-);
-
-assert.equal(
-  ai.suggested,
-  3,
-  "Expected three AI suggestions"
-);
-
-assert.equal(
-  ai.failed,
-  3,
-  "Expected three AI recovery failures"
-);
-
-assert.equal(
-  ai.noCandidate,
-  0,
-  "Unexpected AI no-candidate count"
-);
-
-assert.equal(
-  ai.disabled,
-  0,
-  "Unexpected AI disabled count"
-);
-
-assert.equal(
-  ai.evaluatedCandidates,
-  3,
-  "Expected three evaluated AI candidates"
-);
-
-assert.equal(
-  ai.averageConfidence,
-  0.95,
-  "Unexpected average AI confidence"
-);
-
-assert.ok(
-  Array.isArray(ai.events),
-  "AI recovery events must be an array"
-);
-
-assert.equal(
-  ai.events.length,
-  ai.totalEvaluations,
-  "AI recovery event count mismatch"
-);
-
-assert.equal(
-  ai.suggested +
-  ai.noCandidate +
-  ai.disabled +
-  ai.failed,
-  ai.totalEvaluations,
-  "AI recovery status totals do not match"
-);
-
-// --------------------------------------------------
-// 4. AI audit event schema validation
-// --------------------------------------------------
 
 const validStatuses = new Set([
   "SUGGESTED",
@@ -174,17 +27,80 @@ const validStatuses = new Set([
   "FAILED",
 ]);
 
-const statusCounts = {
-  SUGGESTED: 0,
-  NO_CANDIDATE: 0,
-  DISABLED: 0,
-  FAILED: 0,
-};
+const privateAIFields = [
+  "primarySelector",
+  "suggestedSelector",
+  "recoveredSelector",
+  "rawDOM",
+  "rawDom",
+  "outerHTML",
+  "innerHTML",
+  "html",
+  "domSnapshot",
+  "pageSource",
+];
 
-let evaluatedCandidates = 0;
-const confidenceValues = [];
+function isRecord(value) {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value);
+}
 
-for (const event of ai.events) {
+function nonNegativeInteger(value, name) {
+  assert.ok(
+    Number.isSafeInteger(value) && value >= 0,
+    `${name} must be a non-negative integer`
+  );
+}
+
+function confidence(value, name, minimum = 0) {
+  assert.ok(
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimum &&
+    value <= 1,
+    `Invalid ${name}`
+  );
+}
+
+function average(values) {
+  return values.length
+    ? Number(
+        (
+          values.reduce((sum, value) => sum + value, 0) /
+          values.length
+        ).toFixed(3)
+      )
+    : null;
+}
+
+function validateHealingEvent(event) {
+  assert.ok(isRecord(event), "Invalid healing event");
+
+  assert.equal(event.event, "LOCATOR_HEALED");
+
+  for (const field of [
+    "primarySelector",
+    "recoveredSelector",
+    "strategy",
+  ]) {
+    assert.ok(
+      typeof event[field] === "string" &&
+      event[field].length > 0,
+      `Invalid healing ${field}`
+    );
+  }
+
+  confidence(
+    event.confidence,
+    "deterministic healing confidence",
+    0.85
+  );
+}
+
+function validateAIEvent(event) {
+  assert.ok(isRecord(event), "Invalid AI recovery event");
+
   assert.equal(
     event.event,
     "AI_RECOVERY_EVALUATED"
@@ -207,10 +123,9 @@ for (const event of ai.events) {
     "Invalid AI provider"
   );
 
-  assert.ok(
-    Number.isSafeInteger(event.evaluatedCandidates) &&
-    event.evaluatedCandidates >= 0,
-    "Invalid evaluated candidate count"
+  nonNegativeInteger(
+    event.evaluatedCandidates,
+    "AI evaluatedCandidates"
   );
 
   assert.ok(
@@ -220,77 +135,155 @@ for (const event of ai.events) {
   );
 
   if (event.confidence !== undefined) {
-    assert.ok(
-      typeof event.confidence === "number" &&
-      Number.isFinite(event.confidence) &&
-      event.confidence >= 0 &&
-      event.confidence <= 1,
-      "Invalid AI confidence"
-    );
-
-    confidenceValues.push(event.confidence);
+    confidence(event.confidence, "AI confidence");
   }
 
-  // AI audit events must never expose raw DOM
-  // or selector suggestions.
-  assert.equal(
-    Object.hasOwn(event, "primarySelector"),
-    false,
-    "AI audit event exposes a primary selector"
-  );
-
-  assert.equal(
-    Object.hasOwn(event, "suggestedSelector"),
-    false,
-    "AI audit event exposes a suggested selector"
-  );
-
-  assert.equal(
-    Object.hasOwn(event, "rawDOM"),
-    false,
-    "AI audit event exposes raw DOM"
-  );
-
-  statusCounts[event.status] += 1;
-
-  evaluatedCandidates += event.evaluatedCandidates;
+  for (const field of privateAIFields) {
+    assert.equal(
+      Object.hasOwn(event, field),
+      false,
+      `AI audit event exposes sensitive field: ${field}`
+    );
+  }
 }
 
-assert.equal(statusCounts.SUGGESTED, ai.suggested);
-assert.equal(statusCounts.NO_CANDIDATE, ai.noCandidate);
-assert.equal(statusCounts.DISABLED, ai.disabled);
-assert.equal(statusCounts.FAILED, ai.failed);
+function validateReport(report, useBaseline = false) {
+  assert.ok(isRecord(report), "Invalid report object");
 
-assert.equal(
-  evaluatedCandidates,
-  ai.evaluatedCandidates,
-  "AI evaluated candidate total mismatch"
-);
+  assert.equal(
+    report.overallStatus,
+    "passed",
+    "Test execution must pass"
+  );
 
-const calculatedAverage =
-  confidenceValues.length > 0
-    ? Number(
-        (
-          confidenceValues.reduce(
-            (sum, value) => sum + value,
-            0
-          ) / confidenceValues.length
-        ).toFixed(3)
-      )
-    : null;
+  assert.ok(
+    Array.isArray(report.tests),
+    "Test records must be an array"
+  );
 
-assert.equal(
-  calculatedAverage,
-  ai.averageConfidence,
-  "AI average confidence mismatch"
-);
+  assert.ok(
+    isRecord(report.healing),
+    "Deterministic healing summary is missing"
+  );
 
-// --------------------------------------------------
-// 5. Cross-check per-test reporting
-// --------------------------------------------------
+  assert.ok(
+    isRecord(report.aiRecovery),
+    "AI recovery summary is missing"
+  );
 
-const testHealingEvents = report.tests.reduce(
-  (sum, test) => {
+  const healing = report.healing;
+  const ai = report.aiRecovery;
+
+  nonNegativeInteger(
+    healing.totalEvents,
+    "Healing totalEvents"
+  );
+
+  nonNegativeInteger(
+    healing.healedAttempts,
+    "Healing healedAttempts"
+  );
+
+  assert.ok(
+    Array.isArray(healing.events),
+    "Healing events must be an array"
+  );
+
+  assert.equal(
+    healing.events.length,
+    healing.totalEvents,
+    "Healing event count mismatch"
+  );
+
+  assert.ok(
+    healing.healedAttempts <= report.tests.length,
+    "Healed attempts exceed test records"
+  );
+
+  for (const event of healing.events) {
+    validateHealingEvent(event);
+  }
+
+  const healingAverage = average(
+    healing.events.map(event => event.confidence)
+  );
+
+  assert.equal(
+    healing.averageConfidence,
+    healingAverage,
+    "Unexpected deterministic healing confidence"
+  );
+
+  assert.ok(
+    Array.isArray(ai.events),
+    "AI recovery events must be an array"
+  );
+
+  for (const field of [
+    "totalEvaluations",
+    "suggested",
+    "noCandidate",
+    "disabled",
+    "failed",
+    "evaluatedCandidates",
+  ]) {
+    nonNegativeInteger(ai[field], `AI ${field}`);
+  }
+
+  assert.equal(
+    ai.events.length,
+    ai.totalEvaluations,
+    "AI recovery event count mismatch"
+  );
+
+  const statusCounts = {
+    SUGGESTED: 0,
+    NO_CANDIDATE: 0,
+    DISABLED: 0,
+    FAILED: 0,
+  };
+
+  let evaluatedCandidates = 0;
+  const confidenceValues = [];
+
+  for (const event of ai.events) {
+    validateAIEvent(event);
+
+    statusCounts[event.status] += 1;
+    evaluatedCandidates += event.evaluatedCandidates;
+
+    if (event.confidence !== undefined) {
+      confidenceValues.push(event.confidence);
+    }
+  }
+
+  assert.equal(statusCounts.SUGGESTED, ai.suggested);
+  assert.equal(statusCounts.NO_CANDIDATE, ai.noCandidate);
+  assert.equal(statusCounts.DISABLED, ai.disabled);
+  assert.equal(statusCounts.FAILED, ai.failed);
+
+  assert.equal(
+    evaluatedCandidates,
+    ai.evaluatedCandidates,
+    "AI evaluated candidate total mismatch"
+  );
+
+  assert.equal(
+    average(confidenceValues),
+    ai.averageConfidence,
+    "AI average confidence mismatch"
+  );
+
+  let perTestHealing = 0;
+  let perTestAI = 0;
+  let healedAttempts = 0;
+
+  for (const test of report.tests) {
+    assert.ok(
+      isRecord(test),
+      "Invalid test record"
+    );
+
     assert.ok(
       Array.isArray(test.healingEvents),
       "Missing per-test healing events"
@@ -301,57 +294,127 @@ const testHealingEvents = report.tests.reduce(
       "Missing per-test AI recovery events"
     );
 
-    return sum + test.healingEvents.length;
-  },
-  0
-);
+    for (const event of test.healingEvents) {
+      validateHealingEvent(event);
+    }
 
-const testAIEvents = report.tests.reduce(
-  (sum, test) =>
-    sum + test.aiRecoveryEvents.length,
-  0
-);
+    for (const event of test.aiRecoveryEvents) {
+      validateAIEvent(event);
+    }
 
-assert.equal(
-  testHealingEvents,
-  report.healing.totalEvents,
-  "Per-test deterministic healing total mismatch"
-);
+    perTestHealing += test.healingEvents.length;
+    perTestAI += test.aiRecoveryEvents.length;
 
-assert.equal(
-  testAIEvents,
-  ai.totalEvaluations,
-  "Per-test AI recovery total mismatch"
-);
+    if (test.healingEvents.length > 0) {
+      healedAttempts += 1;
+    }
+  }
 
-// --------------------------------------------------
-// 6. Validation completed
-// --------------------------------------------------
+  assert.equal(
+    perTestHealing,
+    healing.totalEvents,
+    "Per-test deterministic healing total mismatch"
+  );
 
-console.log(
-  "[AutoHeal QA] Deterministic healing validation passed!"
-);
+  assert.equal(
+    perTestAI,
+    ai.totalEvaluations,
+    "Per-test AI recovery total mismatch"
+  );
 
-console.log(
-  "[AutoHeal QA] AI recovery reporting validation passed!"
-);
+  assert.equal(
+    healedAttempts,
+    healing.healedAttempts,
+    "Healed attempts mismatch"
+  );
 
-console.log(
-  `[AutoHeal QA] Healing events: ${report.healing.totalEvents}`
-);
+  if (useBaseline) {
+    assert.equal(
+      healing.totalEvents,
+      9,
+      "Expected nine deterministic healing events"
+    );
 
-console.log(
-  `[AutoHeal QA] AI evaluations: ${ai.totalEvaluations}`
-);
+    assert.equal(healing.healedAttempts, 9);
+    assert.equal(healing.averageConfidence, 0.95);
 
-console.log(
-  `[AutoHeal QA] AI suggestions: ${ai.suggested}`
-);
+    assert.equal(
+      ai.totalEvaluations,
+      6,
+      "Expected six AI recovery evaluations"
+    );
 
-console.log(
-  `[AutoHeal QA] AI failures: ${ai.failed}`
-);
+    assert.equal(ai.suggested, 3);
+    assert.equal(ai.failed, 3);
+    assert.equal(ai.noCandidate, 0);
+    assert.equal(ai.disabled, 0);
+    assert.equal(ai.evaluatedCandidates, 3);
+    assert.equal(ai.averageConfidence, 0.95);
+  }
 
-console.log(
-  "[AutoHeal QA] Phase 3.7 report validation passed!"
-);
+  return {
+    healingEvents: healing.totalEvents,
+    aiEvaluations: ai.totalEvaluations,
+    aiSuggestions: ai.suggested,
+    aiFailures: ai.failed,
+    tests: report.tests.length,
+  };
+}
+
+function main() {
+  assert.ok(
+    fs.existsSync(reportPath),
+    `AutoHeal report does not exist: ${reportPath}`
+  );
+
+  const report = JSON.parse(
+    fs.readFileSync(reportPath, "utf8")
+  );
+
+  const result = validateReport(report, baseline);
+
+  console.log(
+    "[AutoHeal QA] Report validation passed!"
+  );
+
+  console.log(
+    `[AutoHeal QA] Mode: ${baseline ? "baseline" : "standard"}`
+  );
+
+  console.log(
+    `[AutoHeal QA] Test records: ${result.tests}`
+  );
+
+  console.log(
+    `[AutoHeal QA] Healing events: ${result.healingEvents}`
+  );
+
+  console.log(
+    `[AutoHeal QA] AI evaluations: ${result.aiEvaluations}`
+  );
+
+  console.log(
+    `[AutoHeal QA] AI suggestions: ${result.aiSuggestions}`
+  );
+
+  console.log(
+    `[AutoHeal QA] AI failures: ${result.aiFailures}`
+  );
+}
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(
+      `[AutoHeal QA] Validation failed: ${error.message}`
+    );
+    process.exitCode = 1;
+  }
+}
+
+module.exports = {
+  validateReport,
+  validateHealingEvent,
+  validateAIEvent,
+};

@@ -102,12 +102,16 @@ class AutoHealReporter implements Reporter {
     return (
       event.event === "LOCATOR_HEALED" &&
       typeof event.timestamp === "string" &&
+      Number.isFinite(Date.parse(event.timestamp)) &&
       typeof event.primarySelector === "string" &&
+      event.primarySelector.length > 0 &&
       typeof event.recoveredSelector === "string" &&
+      event.recoveredSelector.length > 0 &&
       typeof event.strategy === "string" &&
+      event.strategy.length > 0 &&
       typeof event.confidence === "number" &&
       Number.isFinite(event.confidence) &&
-      event.confidence >= 0 &&
+      event.confidence >= 0.85 &&
       event.confidence <= 1
     );
   }
@@ -138,8 +142,10 @@ class AutoHealReporter implements Reporter {
     return (
       event.event === "AI_RECOVERY_EVALUATED" &&
       typeof event.timestamp === "string" &&
+      Number.isFinite(Date.parse(event.timestamp)) &&
       validStatuses.includes(String(event.status)) &&
       typeof event.provider === "string" &&
+      event.provider.length > 0 &&
       typeof event.evaluatedCandidates === "number" &&
       Number.isSafeInteger(event.evaluatedCandidates) &&
       event.evaluatedCandidates >= 0 &&
@@ -183,10 +189,9 @@ class AutoHealReporter implements Reporter {
       }
 
       return JSON.parse(raw) as unknown;
-    } catch (error) {
+    } catch {
       console.warn(
-        "[AutoHeal QA] Failed to parse audit attachment:",
-        error
+        "[AutoHeal QA] Failed to parse audit attachment"
       );
 
       return null;
@@ -243,7 +248,22 @@ class AutoHealReporter implements Reporter {
       const parsed = this.readAttachment(attachment);
 
       if (this.isAIRecoveryAuditEvent(parsed)) {
-        events.push(parsed);
+        // Explicitly allowlist AI audit properties to prevent
+        // unexpected attachment fields from entering reports.
+        const sanitized: AIRecoveryAuditEvent = {
+          event: parsed.event,
+          timestamp: parsed.timestamp,
+          status: parsed.status,
+          provider: parsed.provider,
+          evaluatedCandidates: parsed.evaluatedCandidates,
+          ...(parsed.reason !== undefined
+            ? { reason: parsed.reason }
+            : {}),
+          ...(parsed.confidence !== undefined
+            ? { confidence: parsed.confidence }
+            : {}),
+        };
+        events.push(sanitized);
       } else {
         console.warn(
           "[AutoHeal QA] Invalid AI recovery audit event structure"
