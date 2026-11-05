@@ -23,6 +23,8 @@
     "typecheck": "tsc --noEmit",
     "test:reporting": "node --test tests/reporting/*.test.cjs",
     "validate": "npm run typecheck && npm run test:list",
+    "validate:report": "node scripts/validate-healing-report.cjs",
+    "validate:report:baseline": "node scripts/validate-healing-report.cjs --baseline",
     "validate:reliability": "npm run typecheck && npm run test:reliability",
     "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\""
   },
