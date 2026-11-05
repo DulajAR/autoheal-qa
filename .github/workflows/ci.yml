@@ -1,0 +1,96 @@
+
+name: AutoHeal QA CI
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+
+  pull_request:
+    branches:
+      - develop
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoheal-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: TypeScript and Reporting Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript validation
+        run: npm run typecheck
+
+      - name: Reporting regression tests
+        run: npm run test:reporting
+
+  playwright:
+    name: Cross-Browser Playwright Tests
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      CI: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright tests
+        id: playwright_tests
+        run: npx playwright test
+
+      - name: Validate standard report
+        if: steps.playwright_tests.outcome == 'success'
+        run: npm run validate:report
+
+      - name: Validate baseline report
+        if: steps.playwright_tests.outcome == 'success'
+        run: npm run validate:report:baseline
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoheal-qa-reports
+          path: |
+            reports/html/
+            reports/autoheal/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 14
