@@ -14,20 +14,28 @@ import {
   isSafeAISelector,
 } from "./AIRequestSanitizer";
 
+import type {
+  AIProviderDiagnostics,
+  AIProviderErrorCode,
+} from "./AIProviderDiagnostics";
+
+import {
+  classifyHTTPStatus,
+  classifyProviderFailure,
+} from "./AIProviderErrorClassifier";
+
 /**
- * AutoHeal QA - Gemini AI Provider
- * Phase 4.0.6D
- *
- * Uses the Google Gemini REST API.
+ * AutoHeal QA - Gemini Provider
+ * Phase 4.0.7 - Provider Observability
  *
  * Security:
- * - Requires explicit external request authorization
- * - Reuses shared DOM sanitization
- * - Never sends the original page URL
- * - Limits request and response sizes
- * - Validates generated CSS selectors
- * - Enforces request timeouts
- * - Does not execute suggested selectors
+ * - Explicit network authorization
+ * - Sanitized requests
+ * - Request and response size limits
+ * - Strict locator validation
+ * - Timeout enforcement
+ * - Advisory-only suggestions
+ * - Optional safe diagnostics
  */
 
 const API_BASE =
@@ -40,6 +48,7 @@ const MAX_CANDIDATES = 5;
 export type GeminiProviderOptions = {
   allowExternalRequests: boolean;
   fetchImpl?: typeof fetch;
+  diagnostics?: AIProviderDiagnostics;
 };
 
 function isRecord(
@@ -52,14 +61,13 @@ function isRecord(
   );
 }
 
-/**
- * Read a Gemini response with a strict byte limit.
- */
 async function readLimitedResponse(
   response: Response
 ): Promise<string> {
   if (!response.body) {
-    throw new Error("EMPTY_GEMINI_RESPONSE");
+    throw new Error(
+      "EMPTY_GEMINI_RESPONSE"
+    );
   }
 
   const reader = response.body.getReader();
@@ -69,7 +77,8 @@ async function readLimitedResponse(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } =
+        await reader.read();
 
       if (done) {
         break;
@@ -93,17 +102,16 @@ async function readLimitedResponse(
     reader.releaseLock();
   }
 
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString(
+    "utf8"
+  );
 }
 
-/**
- * Validate Gemini response and extract
- * advisory-only locator candidates.
- */
 function parseCandidates(
   raw: string
 ): AILocatorCandidate[] {
-  const envelope: unknown = JSON.parse(raw);
+  const envelope: unknown =
+    JSON.parse(raw);
 
   if (!isRecord(envelope)) {
     throw new Error(
@@ -157,7 +165,8 @@ function parseCandidates(
       key => key !== "candidates"
     ) ||
     !Array.isArray(parsed.candidates) ||
-    parsed.candidates.length > MAX_CANDIDATES
+    parsed.candidates.length >
+      MAX_CANDIDATES
   ) {
     throw new Error(
       "INVALID_GEMINI_CANDIDATES"
@@ -192,12 +201,6 @@ function parseCandidates(
   );
 }
 
-/**
- * Google Gemini AI provider.
- *
- * Returns suggestions only.
- * It never performs Playwright actions.
- */
 export class GeminiProvider implements AIProvider {
   readonly name = "gemini";
 
@@ -220,7 +223,45 @@ export class GeminiProvider implements AIProvider {
   async suggestLocators(
     request: AILocatorRequest
   ): Promise<AILocatorCandidate[]> {
+    const startedAt = performance.now();
+
+    let errorCode: AIProviderErrorCode =
+      "UNKNOWN_ERROR";
+
+    let recorded = false;
+
+    const record = (
+      outcome: "success" | "failure",
+      candidateCount: number
+    ): void => {
+      if (recorded) {
+        return;
+      }
+
+      recorded = true;
+
+      try {
+        this.options.diagnostics?.record({
+          provider: "gemini",
+          outcome,
+          errorCode:
+            outcome === "success"
+              ? "NONE"
+              : errorCode,
+          durationMs:
+            performance.now() - startedAt,
+          candidateCount,
+        });
+      } catch {
+        // Diagnostics must not affect
+        // provider execution.
+      }
+    };
+
     if (!this.options.allowExternalRequests) {
+      errorCode = "UNAUTHORIZED";
+      record("failure", 0);
+
       throw new Error(
         "EXTERNAL_AI_NOT_AUTHORIZED"
       );
@@ -231,6 +272,9 @@ export class GeminiProvider implements AIProvider {
     try {
       prepared = prepareAIRequest(request);
     } catch {
+      errorCode = "INVALID_REQUEST";
+      record("failure", 0);
+
       throw new Error(
         "INVALID_AI_REQUEST"
       );
@@ -242,6 +286,8 @@ export class GeminiProvider implements AIProvider {
     let timeout:
       | ReturnType<typeof setTimeout>
       | undefined;
+
+    let timedOut = false;
 
     try {
       const body = JSON.stringify({
@@ -271,7 +317,9 @@ export class GeminiProvider implements AIProvider {
             role: "user",
             parts: [
               {
-                text: JSON.stringify(prepared),
+                text: JSON.stringify(
+                  prepared
+                ),
               },
             ],
           },
@@ -289,9 +337,13 @@ export class GeminiProvider implements AIProvider {
       });
 
       if (
-        Buffer.byteLength(body, "utf8") >
-        MAX_REQUEST_BYTES
+        Buffer.byteLength(
+          body,
+          "utf8"
+        ) > MAX_REQUEST_BYTES
       ) {
+        errorCode = "INVALID_REQUEST";
+
         throw new Error(
           "GEMINI_REQUEST_TOO_LARGE"
         );
@@ -303,53 +355,119 @@ export class GeminiProvider implements AIProvider {
         )}:generateContent`;
 
       const operation = (async () => {
-        const response =
-          await this.fetchImpl(url, {
-            method: "POST",
+        let response: Response;
 
-            headers: {
-              "Content-Type":
-                "application/json",
+        try {
+          response =
+            await this.fetchImpl(url, {
+              method: "POST",
+              headers: {
+                "Content-Type":
+                  "application/json",
+                "x-goog-api-key":
+                  this.config.apiKey,
+              },
+              body,
+              signal: controller.signal,
+            });
+        } catch {
+          errorCode = timedOut
+            ? "TIMEOUT"
+            : "NETWORK_ERROR";
 
-              "x-goog-api-key":
-                this.config.apiKey,
-            },
-
-            body,
-            signal: controller.signal,
-          });
+          throw new Error(
+            "GEMINI_NETWORK_ERROR"
+          );
+        }
 
         if (!response.ok) {
+          errorCode = classifyHTTPStatus(
+            response.status
+          );
+
           throw new Error(
             "GEMINI_HTTP_ERROR"
           );
         }
 
-        const raw =
-          await readLimitedResponse(response);
+        let raw: string;
 
-        return parseCandidates(raw);
+        try {
+          raw =
+            await readLimitedResponse(
+              response
+            );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message ===
+              "GEMINI_RESPONSE_TOO_LARGE"
+          ) {
+            errorCode =
+              classifyProviderFailure(
+                "GEMINI_RESPONSE_TOO_LARGE"
+              );
+          } else {
+            errorCode = timedOut
+              ? "TIMEOUT"
+              : "INVALID_RESPONSE";
+          }
+
+          throw error;
+        }
+
+        try {
+          return parseCandidates(raw);
+        } catch {
+          errorCode = "INVALID_RESPONSE";
+
+          throw new Error(
+            "GEMINI_INVALID_RESPONSE"
+          );
+        }
       })();
 
-      const deadline = new Promise<never>(
-        (_, reject) => {
-          timeout = setTimeout(() => {
-            controller.abort();
+      const deadline =
+        new Promise<never>(
+          (_, reject) => {
+            timeout = setTimeout(
+              () => {
+                timedOut = true;
+                errorCode = "TIMEOUT";
 
-            reject(
-              new Error("GEMINI_TIMEOUT")
+                controller.abort();
+
+                reject(
+                  new Error(
+                    "GEMINI_TIMEOUT"
+                  )
+                );
+              },
+              this.config.timeoutMs
             );
-          }, this.config.timeoutMs);
-        }
+          }
+        );
+
+      const candidates =
+        await Promise.race([
+          operation,
+          deadline,
+        ]);
+
+      record(
+        "success",
+        candidates.length
       );
 
-      return await Promise.race([
-        operation,
-        deadline,
-      ]);
+      return candidates;
     } catch {
-      // Do not expose credentials, DOM
-      // snapshots, or provider responses.
+      if (timedOut) {
+        errorCode = "TIMEOUT";
+      }
+
+      record("failure", 0);
+
+      // Preserve existing public errors.
       throw new Error(
         "GEMINI_PROVIDER_FAILED"
       );

@@ -31,21 +31,16 @@ import type {
   GeminiAIConfig,
 } from "./GeminiAIConfig";
 
+import type {
+  AIProviderDiagnostics,
+} from "./AIProviderDiagnostics";
+
 /**
  * AutoHeal QA
- * Phase 4.0.6D - Multi-Provider AI Factory
+ * Phase 4.0.7 - AI Provider Factory
  *
- * Supported providers:
- * - disabled
- * - mock
- * - openai
- * - gemini
- *
- * Security:
- * - External providers require explicit authorization
- * - No API calls are made during provider creation
- * - Production providers are tracked using WeakSet
- * - Existing OpenAI compatibility is preserved
+ * Provider creation never performs
+ * external network requests.
  */
 
 export type AIProviderType =
@@ -56,28 +51,15 @@ export type AIProviderType =
 
 export type AIProviderFactoryOptions = {
   allowExternalRequests?: boolean;
-
-  // Existing OpenAI configuration.
   config?: ProductionAIConfig;
-
-  // New Gemini configuration.
   geminiConfig?: GeminiAIConfig;
-
-  // Injectable fetch implementation for mock tests.
   fetchImpl?: typeof fetch;
+  diagnostics?: AIProviderDiagnostics;
 };
 
-/**
- * Tracks cloud AI providers constructed
- * with explicit authorization.
- */
 const authorizedProviders =
   new WeakSet<AIProvider>();
 
-/**
- * Check whether a provider was created through
- * this factory with external access authorized.
- */
 export function isAuthorizedProductionProvider(
   provider: AIProvider
 ): boolean {
@@ -90,13 +72,6 @@ export function isAuthorizedProductionProvider(
   );
 }
 
-/**
- * Create an AI provider.
- *
- * Creating a provider does not make an API call.
- * Network access only occurs if suggestLocators()
- * is explicitly invoked on an authorized provider.
- */
 export function createAIProvider(
   providerType: AIProviderType,
   options: AIProviderFactoryOptions = {}
@@ -125,6 +100,7 @@ export function createAIProvider(
         new OpenAIProvider(config, {
           allowExternalRequests: true,
           fetchImpl: options.fetchImpl,
+          diagnostics: options.diagnostics,
         });
 
       authorizedProviders.add(provider);
@@ -149,6 +125,7 @@ export function createAIProvider(
         new GeminiProvider(config, {
           allowExternalRequests: true,
           fetchImpl: options.fetchImpl,
+          diagnostics: options.diagnostics,
         });
 
       authorizedProviders.add(provider);
