@@ -6,6 +6,15 @@ import type {
 } from "./AIProvider";
 
 import type {
+  AIProviderRetryPolicy,
+} from "./AIProviderRetryPolicy";
+
+import {
+  AIRetryError,
+  executeAIWithRetry,
+} from "./AIProviderRetryExecutor";
+
+import type {
   ProductionAIConfig,
 } from "./ProductionAIConfig";
 
@@ -26,16 +35,16 @@ import {
 
 /**
  * AutoHeal QA - OpenAI Provider
- * Phase 4.0.7 - Provider Observability
+ * Phase 4.0.8 - AI Provider Reliability
  *
- * Security:
- * - Explicit external request authorization
- * - Sanitized DOM context
+ * - Explicit network authorization
+ * - Sanitized requests
+ * - Strict candidate validation
  * - Bounded response size
- * - Strict locator validation
- * - Request timeout
- * - No automatic selector execution
- * - Safe, optional diagnostics
+ * - Optional bounded retries
+ * - One overall timeout
+ * - One diagnostic event per logical request
+ * - No automatic locator execution
  */
 
 const API_URL =
@@ -44,12 +53,11 @@ const API_URL =
 const MAX_RESPONSE_BYTES = 32_768;
 const MAX_CANDIDATES = 5;
 
-type FetchFunction = typeof fetch;
-
 export type OpenAIProviderOptions = {
   allowExternalRequests: boolean;
-  fetchImpl?: FetchFunction;
+  fetchImpl?: typeof fetch;
   diagnostics?: AIProviderDiagnostics;
+  retryPolicy?: AIProviderRetryPolicy;
 };
 
 function isRecord(
@@ -71,7 +79,6 @@ async function readLimitedResponse(
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
-
   let total = 0;
 
   try {
@@ -168,7 +175,7 @@ function parseCandidates(
 export class OpenAIProvider implements AIProvider {
   readonly name = "openai";
 
-  private readonly fetchImpl: FetchFunction;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(
     private readonly config: ProductionAIConfig,
@@ -211,7 +218,7 @@ export class OpenAIProvider implements AIProvider {
         });
       } catch {
         // Diagnostics must never change
-        // the provider's public behavior.
+        // public provider behavior.
       }
     };
 
@@ -235,14 +242,6 @@ export class OpenAIProvider implements AIProvider {
       throw new Error("INVALID_AI_REQUEST");
     }
 
-    const controller = new AbortController();
-
-    let timeout:
-      | ReturnType<typeof setTimeout>
-      | undefined;
-
-    let timedOut = false;
-
     try {
       const body = JSON.stringify({
         model: this.config.model,
@@ -257,7 +256,6 @@ export class OpenAIProvider implements AIProvider {
         messages: [
           {
             role: "system",
-
             content: [
               "You suggest CSS locators for Playwright.",
               "Return JSON with a candidates array.",
@@ -280,128 +278,129 @@ export class OpenAIProvider implements AIProvider {
         ],
       });
 
-      const operation = (async () => {
-        let response: Response;
+      const candidates = await executeAIWithRetry(
+        async (_attempt, signal) => {
+          let response: Response;
 
-        try {
-          response = await this.fetchImpl(
-            API_URL,
-            {
-              method: "POST",
-              headers: {
-                Authorization:
-                  `Bearer ${this.config.apiKey}`,
-                "Content-Type":
-                  "application/json",
-              },
-              body,
-              signal: controller.signal,
-            }
-          );
-        } catch {
-          errorCode = timedOut
-            ? "TIMEOUT"
-            : "NETWORK_ERROR";
-
-          throw new Error(
-            "PROVIDER_NETWORK_ERROR"
-          );
-        }
-
-        if (!response.ok) {
-          errorCode = classifyHTTPStatus(
-            response.status
-          );
-
-          throw new Error(
-            "PROVIDER_HTTP_ERROR"
-          );
-        }
-
-        let raw: string;
-
-        try {
-          raw = await readLimitedResponse(
-            response
-          );
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message ===
-              "RESPONSE_TOO_LARGE"
-          ) {
-            errorCode =
-              classifyProviderFailure(
-                "RESPONSE_TOO_LARGE"
-              );
-          } else {
-            errorCode = timedOut
-              ? "TIMEOUT"
-              : "INVALID_RESPONSE";
-          }
-
-          throw error;
-        }
-
-        try {
-          return parseCandidates(raw);
-        } catch {
-          errorCode = "INVALID_RESPONSE";
-
-          throw new Error(
-            "PROVIDER_INVALID_RESPONSE"
-          );
-        }
-      })();
-
-      const deadline =
-        new Promise<never>(
-          (_, reject) => {
-            timeout = setTimeout(
-              () => {
-                timedOut = true;
-                errorCode = "TIMEOUT";
-
-                controller.abort();
-
-                reject(
-                  new Error(
-                    "PROVIDER_TIMEOUT"
-                  )
-                );
-              },
-              this.config.timeoutMs
+          try {
+            response = await this.fetchImpl(
+              API_URL,
+              {
+                method: "POST",
+                headers: {
+                  Authorization:
+                    `Bearer ${this.config.apiKey}`,
+                  "Content-Type":
+                    "application/json",
+                },
+                body,
+                signal,
+              }
             );
-          }
-        );
+          } catch {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
 
-      const candidates =
-        await Promise.race([
-          operation,
-          deadline,
-        ]);
+            errorCode = "NETWORK_ERROR";
+
+            throw new AIRetryError({
+              kind: "network",
+            });
+          }
+
+          if (signal.aborted) {
+            throw new Error("AI_RETRY_ABORTED");
+          }
+
+          if (!response.ok) {
+            errorCode = classifyHTTPStatus(
+              response.status
+            );
+
+            throw new AIRetryError({
+              kind: "http",
+              status: response.status,
+            });
+          }
+
+          let raw: string;
+
+          try {
+            raw = await readLimitedResponse(
+              response
+            );
+          } catch (error) {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            if (
+              error instanceof Error &&
+              error.message ===
+                "RESPONSE_TOO_LARGE"
+            ) {
+              errorCode =
+                classifyProviderFailure(
+                  "RESPONSE_TOO_LARGE"
+                );
+            } else {
+              errorCode = "INVALID_RESPONSE";
+            }
+
+            throw new AIRetryError({
+              kind: "invalid_response",
+            });
+          }
+
+          if (signal.aborted) {
+            throw new Error("AI_RETRY_ABORTED");
+          }
+
+          try {
+            const result = parseCandidates(raw);
+
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            return result;
+          } catch {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            errorCode = "INVALID_RESPONSE";
+
+            throw new AIRetryError({
+              kind: "invalid_response",
+            });
+          }
+        },
+        {
+          timeoutMs: this.config.timeoutMs,
+          policy: this.options.retryPolicy,
+        }
+      );
 
       record("success", candidates.length);
 
       return candidates;
-    } catch {
-      if (timedOut) {
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "AI_RETRY_TIMEOUT"
+      ) {
         errorCode = "TIMEOUT";
       }
 
       record("failure", 0);
 
-      // Never expose credentials, DOM
-      // context, or provider responses.
+      // Never expose API credentials,
+      // DOM context or raw responses.
       throw new Error(
         "OPENAI_PROVIDER_FAILED"
       );
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-
-      controller.abort();
     }
   }
 }

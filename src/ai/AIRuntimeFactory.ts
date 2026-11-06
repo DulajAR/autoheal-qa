@@ -23,15 +23,20 @@ import type {
   AIProviderDiagnostics,
 } from "./AIProviderDiagnostics";
 
+import type {
+  AIProviderRetryPolicy,
+} from "./AIProviderRetryPolicy";
+
 /**
  * AutoHeal QA
- * Phase 4.0.7 - AI Runtime Factory
+ * Phase 4.0.8 - AI Runtime Factory
  *
  * Security:
  * - Recovery must be enabled
  * - External requests require authorization
- * - Demo environment blocks cloud AI
  * - Production requires additional approval
+ * - Environment restrictions enforced
+ * - Optional retry configuration
  * - No API calls during construction
  */
 
@@ -40,6 +45,7 @@ export type AIRuntimeFactoryOptions = {
   geminiConfig?: GeminiAIConfig;
   fetchImpl?: typeof fetch;
   diagnostics?: AIProviderDiagnostics;
+  retryPolicy?: AIProviderRetryPolicy;
 };
 
 export function createRuntimeAIProvider(
@@ -97,6 +103,7 @@ export function createRuntimeAIProvider(
       config: options.productionConfig,
       fetchImpl: options.fetchImpl,
       diagnostics: options.diagnostics,
+      retryPolicy: options.retryPolicy,
     });
   }
 
@@ -105,5 +112,6 @@ export function createRuntimeAIProvider(
     geminiConfig: options.geminiConfig,
     fetchImpl: options.fetchImpl,
     diagnostics: options.diagnostics,
+    retryPolicy: options.retryPolicy,
   });
 }
