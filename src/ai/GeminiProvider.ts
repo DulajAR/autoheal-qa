@@ -6,6 +6,15 @@ import type {
 } from "./AIProvider";
 
 import type {
+  AIProviderRetryPolicy,
+} from "./AIProviderRetryPolicy";
+
+import {
+  AIRetryError,
+  executeAIWithRetry,
+} from "./AIProviderRetryExecutor";
+
+import type {
   GeminiAIConfig,
 } from "./GeminiAIConfig";
 
@@ -26,16 +35,16 @@ import {
 
 /**
  * AutoHeal QA - Gemini Provider
- * Phase 4.0.7 - Provider Observability
+ * Phase 4.0.8 - AI Provider Reliability
  *
- * Security:
- * - Explicit network authorization
+ * - Explicit external request authorization
  * - Sanitized requests
  * - Request and response size limits
- * - Strict locator validation
- * - Timeout enforcement
+ * - Strict candidate validation
+ * - Optional bounded retries
+ * - One overall timeout
+ * - One diagnostic event per request
  * - Advisory-only suggestions
- * - Optional safe diagnostics
  */
 
 const API_BASE =
@@ -49,6 +58,7 @@ export type GeminiProviderOptions = {
   allowExternalRequests: boolean;
   fetchImpl?: typeof fetch;
   diagnostics?: AIProviderDiagnostics;
+  retryPolicy?: AIProviderRetryPolicy;
 };
 
 function isRecord(
@@ -72,7 +82,6 @@ async function readLimitedResponse(
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
-
   let total = 0;
 
   try {
@@ -280,15 +289,6 @@ export class GeminiProvider implements AIProvider {
       );
     }
 
-    const controller =
-      new AbortController();
-
-    let timeout:
-      | ReturnType<typeof setTimeout>
-      | undefined;
-
-    let timedOut = false;
-
     try {
       const body = JSON.stringify({
         systemInstruction: {
@@ -354,105 +354,110 @@ export class GeminiProvider implements AIProvider {
           this.config.model
         )}:generateContent`;
 
-      const operation = (async () => {
-        let response: Response;
+      const candidates = await executeAIWithRetry(
+        async (_attempt, signal) => {
+          let response: Response;
 
-        try {
-          response =
-            await this.fetchImpl(url, {
-              method: "POST",
-              headers: {
-                "Content-Type":
-                  "application/json",
-                "x-goog-api-key":
-                  this.config.apiKey,
-              },
-              body,
-              signal: controller.signal,
+          try {
+            response = await this.fetchImpl(
+              url,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type":
+                    "application/json",
+                  "x-goog-api-key":
+                    this.config.apiKey,
+                },
+                body,
+                signal,
+              }
+            );
+          } catch {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            errorCode = "NETWORK_ERROR";
+
+            throw new AIRetryError({
+              kind: "network",
             });
-        } catch {
-          errorCode = timedOut
-            ? "TIMEOUT"
-            : "NETWORK_ERROR";
+          }
 
-          throw new Error(
-            "GEMINI_NETWORK_ERROR"
-          );
-        }
+          if (signal.aborted) {
+            throw new Error("AI_RETRY_ABORTED");
+          }
 
-        if (!response.ok) {
-          errorCode = classifyHTTPStatus(
-            response.status
-          );
+          if (!response.ok) {
+            errorCode = classifyHTTPStatus(
+              response.status
+            );
 
-          throw new Error(
-            "GEMINI_HTTP_ERROR"
-          );
-        }
+            throw new AIRetryError({
+              kind: "http",
+              status: response.status,
+            });
+          }
 
-        let raw: string;
+          let raw: string;
 
-        try {
-          raw =
-            await readLimitedResponse(
+          try {
+            raw = await readLimitedResponse(
               response
             );
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            error.message ===
-              "GEMINI_RESPONSE_TOO_LARGE"
-          ) {
-            errorCode =
-              classifyProviderFailure(
+          } catch (error) {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            if (
+              error instanceof Error &&
+              error.message ===
                 "GEMINI_RESPONSE_TOO_LARGE"
-              );
-          } else {
-            errorCode = timedOut
-              ? "TIMEOUT"
-              : "INVALID_RESPONSE";
-          }
-
-          throw error;
-        }
-
-        try {
-          return parseCandidates(raw);
-        } catch {
-          errorCode = "INVALID_RESPONSE";
-
-          throw new Error(
-            "GEMINI_INVALID_RESPONSE"
-          );
-        }
-      })();
-
-      const deadline =
-        new Promise<never>(
-          (_, reject) => {
-            timeout = setTimeout(
-              () => {
-                timedOut = true;
-                errorCode = "TIMEOUT";
-
-                controller.abort();
-
-                reject(
-                  new Error(
-                    "GEMINI_TIMEOUT"
-                  )
+            ) {
+              errorCode =
+                classifyProviderFailure(
+                  "GEMINI_RESPONSE_TOO_LARGE"
                 );
-              },
-              this.config.timeoutMs
-            );
-          }
-        );
+            } else {
+              errorCode = "INVALID_RESPONSE";
+            }
 
-      const candidates =
-        await Promise.race([
-          operation,
-          deadline,
-        ]);
+            throw new AIRetryError({
+              kind: "invalid_response",
+            });
+          }
+
+          if (signal.aborted) {
+            throw new Error("AI_RETRY_ABORTED");
+          }
+
+          try {
+            const result = parseCandidates(raw);
+
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            return result;
+          } catch {
+            if (signal.aborted) {
+              throw new Error("AI_RETRY_ABORTED");
+            }
+
+            errorCode = "INVALID_RESPONSE";
+
+            throw new AIRetryError({
+              kind: "invalid_response",
+            });
+          }
+        },
+        {
+          timeoutMs: this.config.timeoutMs,
+          policy: this.options.retryPolicy,
+        }
+      );
 
       record(
         "success",
@@ -460,8 +465,11 @@ export class GeminiProvider implements AIProvider {
       );
 
       return candidates;
-    } catch {
-      if (timedOut) {
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "AI_RETRY_TIMEOUT"
+      ) {
         errorCode = "TIMEOUT";
       }
 
@@ -471,12 +479,6 @@ export class GeminiProvider implements AIProvider {
       throw new Error(
         "GEMINI_PROVIDER_FAILED"
       );
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-
-      controller.abort();
     }
   }
 }

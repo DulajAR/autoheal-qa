@@ -35,12 +35,21 @@ import type {
   AIProviderDiagnostics,
 } from "./AIProviderDiagnostics";
 
+import type {
+  AIProviderRetryPolicy,
+} from "./AIProviderRetryPolicy";
+
 /**
  * AutoHeal QA
- * Phase 4.0.7 - AI Provider Factory
+ * Phase 4.0.8 - AI Provider Factory
  *
- * Provider creation never performs
- * external network requests.
+ * Security:
+ * - Explicit authorization required
+ * - No external calls during construction
+ * - Production providers tracked securely
+ * - Optional diagnostics
+ * - Optional retry policy
+ * - Retries disabled by default
  */
 
 export type AIProviderType =
@@ -55,6 +64,7 @@ export type AIProviderFactoryOptions = {
   geminiConfig?: GeminiAIConfig;
   fetchImpl?: typeof fetch;
   diagnostics?: AIProviderDiagnostics;
+  retryPolicy?: AIProviderRetryPolicy;
 };
 
 const authorizedProviders =
@@ -101,6 +111,7 @@ export function createAIProvider(
           allowExternalRequests: true,
           fetchImpl: options.fetchImpl,
           diagnostics: options.diagnostics,
+          retryPolicy: options.retryPolicy,
         });
 
       authorizedProviders.add(provider);
@@ -126,6 +137,7 @@ export function createAIProvider(
           allowExternalRequests: true,
           fetchImpl: options.fetchImpl,
           diagnostics: options.diagnostics,
+          retryPolicy: options.retryPolicy,
         });
 
       authorizedProviders.add(provider);
