@@ -5,6 +5,22 @@ import {
   AIProviderDiagnostics,
 } from "../src/ai/AIProviderDiagnostics";
 
+/**
+ * AutoHeal QA
+ * Phase 4.0.7 - Provider Diagnostics
+ * Phase 4.0.9 - Retry Diagnostics Security Hardening
+ *
+ * Tests:
+ * - Event recording
+ * - Provider metrics isolation
+ * - Defensive copies
+ * - Error-code sanitization
+ * - Numeric bounds
+ * - Maximum event retention
+ * - Sensitive-field exclusion
+ * - Retry metadata sanitization
+ */
+
 test.describe(
   "Phase 4.0.7 - AI Provider Diagnostics",
   () => {
@@ -316,6 +332,88 @@ test.describe(
         expect(
           diagnostics.getMetrics("gemini").totalRequests
         ).toBe(0);
+      }
+    );
+
+    /**
+     * SEC-RDG-001
+     *
+     * Phase 4.0.9 security regression.
+     *
+     * Verifies:
+     * - Attempt count is bounded
+     * - Retry count is bounded
+     * - Invalid retry error codes are rejected
+     * - Sensitive extra fields are discarded
+     * - Only approved fields are retained
+     */
+    test(
+      "SEC-RDG-001: sanitizes retry metadata and excludes unexpected fields",
+      () => {
+        const diagnostics = new AIProviderDiagnostics();
+
+        const secret = "PRIVATE_RETRY_SECRET";
+
+        diagnostics.record({
+          provider: "openai",
+          outcome: "failure",
+          errorCode: "HTTP_ERROR",
+          durationMs: 120,
+          candidateCount: 0,
+
+          attemptCount: 999,
+          retryCount: 999,
+
+          lastRetryErrorCode: secret as never,
+
+          apiKey: secret,
+          rawResponse: secret,
+          domSnapshot: secret,
+        } as Parameters<
+          AIProviderDiagnostics["record"]
+        >[0]);
+
+        const events = diagnostics.getEvents();
+
+        expect(events).toHaveLength(1);
+
+        expect(events[0]).toMatchObject({
+          provider: "openai",
+          outcome: "failure",
+          errorCode: "HTTP_ERROR",
+          candidateCount: 0,
+          attemptCount: 3,
+          retryCount: 2,
+          lastRetryErrorCode: "NONE",
+        });
+
+        const serialized = JSON.stringify(events);
+
+        expect(serialized).not.toContain(secret);
+        expect(serialized).not.toContain("apiKey");
+        expect(serialized).not.toContain("rawResponse");
+        expect(serialized).not.toContain("domSnapshot");
+
+        expect(
+          Object.keys(events[0]).sort()
+        ).toEqual([
+          "attemptCount",
+          "candidateCount",
+          "durationMs",
+          "errorCode",
+          "lastRetryErrorCode",
+          "outcome",
+          "provider",
+          "retryCount",
+        ]);
+
+        expect(
+          diagnostics.getMetrics("openai").totalRequests
+        ).toBe(1);
+
+        expect(
+          diagnostics.getMetrics("openai").failedRequests
+        ).toBe(1);
       }
     );
   }

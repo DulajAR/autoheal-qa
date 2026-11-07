@@ -11,10 +11,54 @@ import type {
   AIProviderRetryPolicy,
 } from "./AIProviderRetryPolicy";
 
+/**
+ * AutoHeal QA
+ * Phase 4.0.9 - Retry Executor Hardening
+ *
+ * Features:
+ * - Bounded retry policy
+ * - One overall deadline
+ * - Immediate external cancellation
+ * - Abort propagation
+ * - No retries after cancellation
+ * - Sanitized retry observability
+ * - Safe optional progress callbacks
+ *
+ * Security:
+ * - No credentials recorded
+ * - No request bodies recorded
+ * - No raw provider responses recorded
+ * - No raw error messages recorded
+ */
+
+export type AIRetryFailureCategory =
+  | "RATE_LIMITED"
+  | "HTTP_ERROR"
+  | "NETWORK_ERROR"
+  | "NONE";
+
+export type AIRetryProgress = Readonly<{
+  attemptCount: number;
+  retryCount: number;
+  lastRetryErrorCode: AIRetryFailureCategory;
+}>;
+
 export type AIRetryExecutorOptions = {
   policy?: AIProviderRetryPolicy;
   timeoutMs: number;
   signal?: AbortSignal;
+
+  /**
+   * Optional sanitized retry progress observer.
+   *
+   * Called when an attempt starts or when
+   * a retryable failure is scheduled.
+   *
+   * Observer exceptions are ignored.
+   */
+  onRetryProgress?: (
+    progress: AIRetryProgress
+  ) => void;
 };
 
 export type AIRetryOperation<T> = (
@@ -31,6 +75,36 @@ export class AIRetryError extends Error {
   }
 }
 
+/**
+ * Convert a retry failure to an approved
+ * diagnostic category.
+ *
+ * Never expose arbitrary error messages.
+ */
+function classifyRetryFailure(
+  failure: AIRetryFailure
+): AIRetryFailureCategory {
+  if (failure.kind === "network") {
+    return "NETWORK_ERROR";
+  }
+
+  if (failure.kind === "http") {
+    if (failure.status === 429) {
+      return "RATE_LIMITED";
+    }
+
+    return "HTTP_ERROR";
+  }
+
+  return "NONE";
+}
+
+/**
+ * Wait for a bounded retry delay.
+ *
+ * The delay can be interrupted by an
+ * AbortSignal.
+ */
 function waitForDelay(
   durationMs: number,
   signal: AbortSignal
@@ -41,8 +115,11 @@ function waitForDelay(
       return;
     }
 
+    let timer: ReturnType<typeof setTimeout>;
+
     const cleanup = () => {
       clearTimeout(timer);
+
       signal.removeEventListener(
         "abort",
         onAbort
@@ -51,10 +128,11 @@ function waitForDelay(
 
     const onAbort = () => {
       cleanup();
+
       reject(new Error("AI_RETRY_ABORTED"));
     };
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       cleanup();
       resolve();
     }, durationMs);
@@ -64,15 +142,23 @@ function waitForDelay(
       onAbort,
       { once: true }
     );
+
+    // Handle an abort that occurred
+    // while the listener was registered.
+    if (signal.aborted) {
+      onAbort();
+    }
   });
 }
 
 /**
- * Executes a provider operation using one
- * overall timeout and a bounded retry policy.
+ * Execute an AI operation using a bounded
+ * retry policy and one overall deadline.
  *
- * The operation must throw AIRetryError for
- * classified failures.
+ * Cancellation cannot forcibly terminate
+ * operations that ignore AbortSignal.
+ * However, the public promise settles
+ * without waiting for those operations.
  */
 export async function executeAIWithRetry<T>(
   operation: AIRetryOperation<T>,
@@ -93,10 +179,79 @@ export async function executeAIWithRetry<T>(
   const controller = new AbortController();
 
   let timedOut = false;
+
+  let attemptCount = 0;
   let retriesUsed = 0;
 
+  let lastRetryErrorCode:
+    AIRetryFailureCategory = "NONE";
+
+  let deadlineTimer:
+    | ReturnType<typeof setTimeout>
+    | undefined;
+
+  let rejectCancellation:
+    | ((reason: Error) => void)
+    | undefined;
+
+  /**
+   * Notify observers using sanitized,
+   * bounded progress information.
+   *
+   * Diagnostics must never affect the
+   * execution result.
+   */
+  const notifyProgress = (): void => {
+    if (!options.onRetryProgress) {
+      return;
+    }
+
+    const progress: AIRetryProgress = {
+      attemptCount: Math.min(
+        attemptCount,
+        3
+      ),
+
+      retryCount: Math.min(
+        retriesUsed,
+        Math.max(0, attemptCount - 1),
+        2
+      ),
+
+      lastRetryErrorCode,
+    };
+
+    try {
+      options.onRetryProgress(progress);
+    } catch {
+      // Observer errors must never
+      // interrupt provider execution.
+    }
+  };
+
+  /**
+   * External cancellation promise.
+   *
+   * This allows immediate settlement even
+   * when the active operation ignores
+   * its AbortSignal.
+   */
+  const cancellation = new Promise<never>(
+    (_, reject) => {
+      rejectCancellation = reject;
+    }
+  );
+
   const onExternalAbort = () => {
+    if (controller.signal.aborted) {
+      return;
+    }
+
     controller.abort();
+
+    rejectCancellation?.(
+      new Error("AI_RETRY_ABORTED")
+    );
   };
 
   options.signal?.addEventListener(
@@ -106,72 +261,109 @@ export async function executeAIWithRetry<T>(
   );
 
   if (options.signal?.aborted) {
-    controller.abort();
+    onExternalAbort();
   }
 
-  let deadlineTimer:
-    | ReturnType<typeof setTimeout>
-    | undefined;
+  /**
+   * Overall deadline applies to:
+   * - Active operations
+   * - Retry backoff
+   * - All retry attempts combined
+   */
+  const deadline = new Promise<never>(
+    (_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        if (controller.signal.aborted) {
+          return;
+        }
 
-  try {
-    const deadline = new Promise<never>(
-      (_, reject) => {
-        deadlineTimer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-          reject(new Error("AI_RETRY_TIMEOUT"));
-        }, options.timeoutMs);
+        timedOut = true;
+        controller.abort();
+
+        reject(
+          new Error("AI_RETRY_TIMEOUT")
+        );
+      }, options.timeoutMs);
+    }
+  );
+
+  /**
+   * Execute attempts sequentially.
+   */
+  const execution = (async (): Promise<T> => {
+    while (true) {
+      if (controller.signal.aborted) {
+        throw new Error("AI_RETRY_ABORTED");
       }
-    );
 
-    const execution = (async (): Promise<T> => {
-      while (true) {
+      attemptCount++;
+
+      notifyProgress();
+
+      try {
+        const result = await operation(
+          attemptCount,
+          controller.signal
+        );
+
         if (controller.signal.aborted) {
           throw new Error("AI_RETRY_ABORTED");
         }
 
-        try {
-          return await operation(
-            retriesUsed + 1,
-            controller.signal
-          );
-        } catch (error) {
-          if (controller.signal.aborted) {
-            throw new Error("AI_RETRY_ABORTED");
-          }
+        return result;
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new Error("AI_RETRY_ABORTED");
+        }
 
-          if (!(error instanceof AIRetryError)) {
-            throw error;
-          }
+        if (!(error instanceof AIRetryError)) {
+          throw error;
+        }
 
-          if (
-            !shouldRetryAIRequest(
-              error.failure,
-              retriesUsed,
-              policy
-            )
-          ) {
-            throw error;
-          }
-
-          retriesUsed++;
-
-          const delay = calculateAIRetryDelay(
+        const retryAllowed =
+          shouldRetryAIRequest(
+            error.failure,
             retriesUsed,
             policy
           );
 
-          await waitForDelay(
-            delay,
-            controller.signal
-          );
+        if (!retryAllowed) {
+          throw error;
         }
-      }
-    })();
 
+        /**
+         * Record the category of the
+         * failure that caused a retry.
+         */
+        lastRetryErrorCode =
+          classifyRetryFailure(
+            error.failure
+          );
+
+        retriesUsed++;
+
+        const delay = calculateAIRetryDelay(
+          retriesUsed,
+          policy
+        );
+
+        /**
+         * Wait before starting the next
+         * attempt.
+         */
+        await waitForDelay(
+          delay,
+          controller.signal
+        );
+      }
+    }
+  })();
+
+  try {
     return await Promise.race([
       execution,
       deadline,
+      cancellation,
     ]);
   } catch (error) {
     if (timedOut) {

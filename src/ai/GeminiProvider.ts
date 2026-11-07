@@ -5,6 +5,10 @@ import type {
   AILocatorRequest,
 } from "./AIProvider";
 
+import {
+  readAIProviderResponse,
+} from "./AIProviderResponseReader";
+
 import type {
   AIProviderRetryPolicy,
 } from "./AIProviderRetryPolicy";
@@ -12,6 +16,10 @@ import type {
 import {
   AIRetryError,
   executeAIWithRetry,
+} from "./AIProviderRetryExecutor";
+
+import type {
+  AIRetryProgress,
 } from "./AIProviderRetryExecutor";
 
 import type {
@@ -35,23 +43,30 @@ import {
 
 /**
  * AutoHeal QA - Gemini Provider
- * Phase 4.0.8 - AI Provider Reliability
+ * Phase 4.0.9 - AI Provider Reliability Hardening
  *
+ * Features:
  * - Explicit external request authorization
- * - Sanitized requests
- * - Request and response size limits
+ * - Sanitized request metadata
  * - Strict candidate validation
+ * - Bounded, abort-aware response reading
  * - Optional bounded retries
  * - One overall timeout
- * - One diagnostic event per request
- * - Advisory-only suggestions
+ * - Sanitized retry observability
+ * - One diagnostic event per logical request
+ * - Advisory-only locator suggestions
+ *
+ * Security:
+ * - No API credentials stored in diagnostics
+ * - No DOM snapshots stored in diagnostics
+ * - No raw provider responses stored
+ * - No automatic locator execution
  */
 
 const API_BASE =
   "https://generativelanguage.googleapis.com/v1beta/models/";
 
 const MAX_REQUEST_BYTES = 16_384;
-const MAX_RESPONSE_BYTES = 32_768;
 const MAX_CANDIDATES = 5;
 
 export type GeminiProviderOptions = {
@@ -61,6 +76,10 @@ export type GeminiProviderOptions = {
   retryPolicy?: AIProviderRetryPolicy;
 };
 
+/**
+ * Validate that an unknown value is a
+ * non-array object.
+ */
 function isRecord(
   value: unknown
 ): value is Record<string, unknown> {
@@ -71,51 +90,12 @@ function isRecord(
   );
 }
 
-async function readLimitedResponse(
-  response: Response
-): Promise<string> {
-  if (!response.body) {
-    throw new Error(
-      "EMPTY_GEMINI_RESPONSE"
-    );
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  try {
-    while (true) {
-      const { done, value } =
-        await reader.read();
-
-      if (done) {
-        break;
-      }
-
-      total += value.byteLength;
-
-      if (total > MAX_RESPONSE_BYTES) {
-        throw new Error(
-          "GEMINI_RESPONSE_TOO_LARGE"
-        );
-      }
-
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(
-      () => undefined
-    );
-
-    reader.releaseLock();
-  }
-
-  return Buffer.concat(chunks).toString(
-    "utf8"
-  );
-}
-
+/**
+ * Parse and validate Gemini candidates.
+ *
+ * Candidate selectors must pass the
+ * existing sanitizer security policy.
+ */
 function parseCandidates(
   raw: string
 ): AILocatorCandidate[] {
@@ -210,6 +190,15 @@ function parseCandidates(
   );
 }
 
+/**
+ * Gemini provider implementation.
+ *
+ * AI-generated candidates are returned
+ * for evaluation only.
+ *
+ * This provider never executes suggested
+ * locators against the browser.
+ */
 export class GeminiProvider implements AIProvider {
   readonly name = "gemini";
 
@@ -239,6 +228,26 @@ export class GeminiProvider implements AIProvider {
 
     let recorded = false;
 
+    /**
+     * Retry progress is local to this
+     * logical provider request.
+     *
+     * No credentials or request content
+     * are retained.
+     */
+    let retryProgress: AIRetryProgress = {
+      attemptCount: 0,
+      retryCount: 0,
+      lastRetryErrorCode: "NONE",
+    };
+
+    /**
+     * Record exactly one sanitized
+     * diagnostic event.
+     *
+     * Diagnostics must never change
+     * provider execution behavior.
+     */
     const record = (
       outcome: "success" | "failure",
       candidateCount: number
@@ -253,22 +262,39 @@ export class GeminiProvider implements AIProvider {
         this.options.diagnostics?.record({
           provider: "gemini",
           outcome,
+
           errorCode:
             outcome === "success"
               ? "NONE"
               : errorCode,
+
           durationMs:
             performance.now() - startedAt,
+
           candidateCount,
+
+          attemptCount:
+            retryProgress.attemptCount,
+
+          retryCount:
+            retryProgress.retryCount,
+
+          lastRetryErrorCode:
+            retryProgress.lastRetryErrorCode,
         });
       } catch {
-        // Diagnostics must not affect
-        // provider execution.
+        // Diagnostics failures must never
+        // affect provider execution.
       }
     };
 
+    /**
+     * Explicit authorization is required
+     * before making external AI requests.
+     */
     if (!this.options.allowExternalRequests) {
       errorCode = "UNAUTHORIZED";
+
       record("failure", 0);
 
       throw new Error(
@@ -276,12 +302,16 @@ export class GeminiProvider implements AIProvider {
       );
     }
 
+    /**
+     * Sanitize and validate request data.
+     */
     let prepared: AILocatorRequest;
 
     try {
       prepared = prepareAIRequest(request);
     } catch {
       errorCode = "INVALID_REQUEST";
+
       record("failure", 0);
 
       throw new Error(
@@ -290,6 +320,9 @@ export class GeminiProvider implements AIProvider {
     }
 
     try {
+      /**
+       * Construct the Gemini request body.
+       */
       const body = JSON.stringify({
         systemInstruction: {
           parts: [
@@ -336,6 +369,10 @@ export class GeminiProvider implements AIProvider {
         },
       });
 
+      /**
+       * Enforce the Gemini request
+       * byte-size limit.
+       */
       if (
         Buffer.byteLength(
           body,
@@ -349,33 +386,48 @@ export class GeminiProvider implements AIProvider {
         );
       }
 
+      /**
+       * Construct the Gemini endpoint.
+       */
       const url =
         `${API_BASE}${encodeURIComponent(
           this.config.model
         )}:generateContent`;
 
+      /**
+       * Execute the provider request using
+       * the shared bounded retry executor.
+       */
       const candidates = await executeAIWithRetry(
         async (_attempt, signal) => {
           let response: Response;
 
+          /**
+           * Network request.
+           */
           try {
             response = await this.fetchImpl(
               url,
               {
                 method: "POST",
+
                 headers: {
                   "Content-Type":
                     "application/json",
+
                   "x-goog-api-key":
                     this.config.apiKey,
                 },
+
                 body,
                 signal,
               }
             );
           } catch {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             errorCode = "NETWORK_ERROR";
@@ -386,9 +438,14 @@ export class GeminiProvider implements AIProvider {
           }
 
           if (signal.aborted) {
-            throw new Error("AI_RETRY_ABORTED");
+            throw new Error(
+              "AI_RETRY_ABORTED"
+            );
           }
 
+          /**
+           * HTTP status validation.
+           */
           if (!response.ok) {
             errorCode = classifyHTTPStatus(
               response.status
@@ -400,25 +457,33 @@ export class GeminiProvider implements AIProvider {
             });
           }
 
+          /**
+           * Read the provider response
+           * using the shared abort-aware
+           * bounded response reader.
+           */
           let raw: string;
 
           try {
-            raw = await readLimitedResponse(
-              response
+            raw = await readAIProviderResponse(
+              response,
+              { signal }
             );
           } catch (error) {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             if (
               error instanceof Error &&
               error.message ===
-                "GEMINI_RESPONSE_TOO_LARGE"
+                "RESPONSE_TOO_LARGE"
             ) {
               errorCode =
                 classifyProviderFailure(
-                  "GEMINI_RESPONSE_TOO_LARGE"
+                  "RESPONSE_TOO_LARGE"
                 );
             } else {
               errorCode = "INVALID_RESPONSE";
@@ -430,20 +495,30 @@ export class GeminiProvider implements AIProvider {
           }
 
           if (signal.aborted) {
-            throw new Error("AI_RETRY_ABORTED");
+            throw new Error(
+              "AI_RETRY_ABORTED"
+            );
           }
 
+          /**
+           * Parse and validate candidates.
+           */
           try {
-            const result = parseCandidates(raw);
+            const result =
+              parseCandidates(raw);
 
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             return result;
           } catch {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             errorCode = "INVALID_RESPONSE";
@@ -455,10 +530,23 @@ export class GeminiProvider implements AIProvider {
         },
         {
           timeoutMs: this.config.timeoutMs,
+
           policy: this.options.retryPolicy,
+
+          /**
+           * Capture sanitized retry
+           * progress without recording
+           * separate provider events.
+           */
+          onRetryProgress: progress => {
+            retryProgress = progress;
+          },
         }
       );
 
+      /**
+       * Record one final success event.
+       */
       record(
         "success",
         candidates.length
@@ -466,6 +554,10 @@ export class GeminiProvider implements AIProvider {
 
       return candidates;
     } catch (error) {
+      /**
+       * Preserve the timeout category
+       * when the overall deadline expires.
+       */
       if (
         error instanceof Error &&
         error.message === "AI_RETRY_TIMEOUT"
@@ -475,7 +567,12 @@ export class GeminiProvider implements AIProvider {
 
       record("failure", 0);
 
-      // Preserve existing public errors.
+      /**
+       * Preserve the public provider error.
+       *
+       * Never expose credentials,
+       * DOM context or raw responses.
+       */
       throw new Error(
         "GEMINI_PROVIDER_FAILED"
       );

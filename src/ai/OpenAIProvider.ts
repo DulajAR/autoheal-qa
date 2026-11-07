@@ -5,6 +5,10 @@ import type {
   AILocatorRequest,
 } from "./AIProvider";
 
+import {
+  readAIProviderResponse,
+} from "./AIProviderResponseReader";
+
 import type {
   AIProviderRetryPolicy,
 } from "./AIProviderRetryPolicy";
@@ -12,6 +16,10 @@ import type {
 import {
   AIRetryError,
   executeAIWithRetry,
+} from "./AIProviderRetryExecutor";
+
+import type {
+  AIRetryProgress,
 } from "./AIProviderRetryExecutor";
 
 import type {
@@ -35,22 +43,29 @@ import {
 
 /**
  * AutoHeal QA - OpenAI Provider
- * Phase 4.0.8 - AI Provider Reliability
+ * Phase 4.0.9 - AI Provider Reliability Hardening
  *
- * - Explicit network authorization
- * - Sanitized requests
+ * Features:
+ * - Explicit external request authorization
+ * - Sanitized request metadata
  * - Strict candidate validation
- * - Bounded response size
+ * - Bounded, abort-aware response reading
  * - Optional bounded retries
  * - One overall timeout
+ * - Sanitized retry observability
  * - One diagnostic event per logical request
+ * - Advisory-only locator suggestions
+ *
+ * Security:
+ * - No credentials stored in diagnostics
+ * - No DOM snapshots stored in diagnostics
+ * - No raw provider responses stored
  * - No automatic locator execution
  */
 
 const API_URL =
   "https://api.openai.com/v1/chat/completions";
 
-const MAX_RESPONSE_BYTES = 32_768;
 const MAX_CANDIDATES = 5;
 
 export type OpenAIProviderOptions = {
@@ -60,6 +75,10 @@ export type OpenAIProviderOptions = {
   retryPolicy?: AIProviderRetryPolicy;
 };
 
+/**
+ * Validate that an unknown value is a
+ * plain JSON-compatible object.
+ */
 function isRecord(
   value: unknown
 ): value is Record<string, unknown> {
@@ -70,44 +89,12 @@ function isRecord(
   );
 }
 
-async function readLimitedResponse(
-  response: Response
-): Promise<string> {
-  if (!response.body) {
-    throw new Error("EMPTY_RESPONSE");
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-
-      if (done) {
-        break;
-      }
-
-      total += value.byteLength;
-
-      if (total > MAX_RESPONSE_BYTES) {
-        throw new Error("RESPONSE_TOO_LARGE");
-      }
-
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(
-      () => undefined
-    );
-
-    reader.releaseLock();
-  }
-
-  return Buffer.concat(chunks).toString("utf8");
-}
-
+/**
+ * Parse and validate OpenAI candidates.
+ *
+ * Candidate selectors must pass the
+ * existing sanitizer security policy.
+ */
 function parseCandidates(
   raw: string
 ): AILocatorCandidate[] {
@@ -172,6 +159,15 @@ function parseCandidates(
   );
 }
 
+/**
+ * OpenAI provider implementation.
+ *
+ * AI-generated candidates are returned
+ * for evaluation only.
+ *
+ * This provider never executes suggested
+ * locators against the browser.
+ */
 export class OpenAIProvider implements AIProvider {
   readonly name = "openai";
 
@@ -194,6 +190,25 @@ export class OpenAIProvider implements AIProvider {
 
     let recorded = false;
 
+    /**
+     * Retry progress is local to this
+     * logical provider request.
+     *
+     * No request content or credentials
+     * are retained here.
+     */
+    let retryProgress: AIRetryProgress = {
+      attemptCount: 0,
+      retryCount: 0,
+      lastRetryErrorCode: "NONE",
+    };
+
+    /**
+     * Record exactly one sanitized event.
+     *
+     * Diagnostics must never change the
+     * provider's public behavior.
+     */
     const record = (
       outcome: "success" | "failure",
       candidateCount: number
@@ -208,22 +223,39 @@ export class OpenAIProvider implements AIProvider {
         this.options.diagnostics?.record({
           provider: "openai",
           outcome,
+
           errorCode:
             outcome === "success"
               ? "NONE"
               : errorCode,
+
           durationMs:
             performance.now() - startedAt,
+
           candidateCount,
+
+          attemptCount:
+            retryProgress.attemptCount,
+
+          retryCount:
+            retryProgress.retryCount,
+
+          lastRetryErrorCode:
+            retryProgress.lastRetryErrorCode,
         });
       } catch {
-        // Diagnostics must never change
-        // public provider behavior.
+        // Diagnostics failures must never
+        // affect provider execution.
       }
     };
 
+    /**
+     * Explicit authorization is required
+     * before making external AI requests.
+     */
     if (!this.options.allowExternalRequests) {
       errorCode = "UNAUTHORIZED";
+
       record("failure", 0);
 
       throw new Error(
@@ -231,18 +263,25 @@ export class OpenAIProvider implements AIProvider {
       );
     }
 
+    /**
+     * Sanitize and validate request data.
+     */
     let prepared: AILocatorRequest;
 
     try {
       prepared = prepareAIRequest(request);
     } catch {
       errorCode = "INVALID_REQUEST";
+
       record("failure", 0);
 
       throw new Error("INVALID_AI_REQUEST");
     }
 
     try {
+      /**
+       * Construct the OpenAI request body.
+       */
       const body = JSON.stringify({
         model: this.config.model,
 
@@ -256,6 +295,7 @@ export class OpenAIProvider implements AIProvider {
         messages: [
           {
             role: "system",
+
             content: [
               "You suggest CSS locators for Playwright.",
               "Return JSON with a candidates array.",
@@ -278,28 +318,40 @@ export class OpenAIProvider implements AIProvider {
         ],
       });
 
+      /**
+       * Execute the provider request using
+       * the shared bounded retry executor.
+       */
       const candidates = await executeAIWithRetry(
         async (_attempt, signal) => {
           let response: Response;
 
+          /**
+           * Network request.
+           */
           try {
             response = await this.fetchImpl(
               API_URL,
               {
                 method: "POST",
+
                 headers: {
                   Authorization:
                     `Bearer ${this.config.apiKey}`,
+
                   "Content-Type":
                     "application/json",
                 },
+
                 body,
                 signal,
               }
             );
           } catch {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             errorCode = "NETWORK_ERROR";
@@ -310,9 +362,14 @@ export class OpenAIProvider implements AIProvider {
           }
 
           if (signal.aborted) {
-            throw new Error("AI_RETRY_ABORTED");
+            throw new Error(
+              "AI_RETRY_ABORTED"
+            );
           }
 
+          /**
+           * HTTP status validation.
+           */
           if (!response.ok) {
             errorCode = classifyHTTPStatus(
               response.status
@@ -324,15 +381,23 @@ export class OpenAIProvider implements AIProvider {
             });
           }
 
+          /**
+           * Read the provider response
+           * with the shared abort-aware
+           * bounded response reader.
+           */
           let raw: string;
 
           try {
-            raw = await readLimitedResponse(
-              response
+            raw = await readAIProviderResponse(
+              response,
+              { signal }
             );
           } catch (error) {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             if (
@@ -354,20 +419,30 @@ export class OpenAIProvider implements AIProvider {
           }
 
           if (signal.aborted) {
-            throw new Error("AI_RETRY_ABORTED");
+            throw new Error(
+              "AI_RETRY_ABORTED"
+            );
           }
 
+          /**
+           * Parse and validate candidates.
+           */
           try {
-            const result = parseCandidates(raw);
+            const result =
+              parseCandidates(raw);
 
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             return result;
           } catch {
             if (signal.aborted) {
-              throw new Error("AI_RETRY_ABORTED");
+              throw new Error(
+                "AI_RETRY_ABORTED"
+              );
             }
 
             errorCode = "INVALID_RESPONSE";
@@ -379,14 +454,37 @@ export class OpenAIProvider implements AIProvider {
         },
         {
           timeoutMs: this.config.timeoutMs,
+
           policy: this.options.retryPolicy,
+
+          /**
+           * Capture sanitized retry
+           * progress without recording
+           * individual provider events.
+           */
+          onRetryProgress: progress => {
+            retryProgress = progress;
+          },
         }
       );
 
-      record("success", candidates.length);
+      /**
+       * The logical request succeeded.
+       *
+       * One diagnostic event is recorded
+       * regardless of the retry count.
+       */
+      record(
+        "success",
+        candidates.length
+      );
 
       return candidates;
     } catch (error) {
+      /**
+       * Preserve the timeout category
+       * when the overall deadline expires.
+       */
       if (
         error instanceof Error &&
         error.message === "AI_RETRY_TIMEOUT"
@@ -396,8 +494,12 @@ export class OpenAIProvider implements AIProvider {
 
       record("failure", 0);
 
-      // Never expose API credentials,
-      // DOM context or raw responses.
+      /**
+       * Preserve the public provider error.
+       *
+       * Never expose API credentials,
+       * DOM context or raw responses.
+       */
       throw new Error(
         "OPENAI_PROVIDER_FAILED"
       );

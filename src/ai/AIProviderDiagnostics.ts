@@ -1,7 +1,7 @@
 
 /**
  * AutoHeal QA
- * Phase 4.0.7 - Provider Diagnostics
+ * Phase 4.0.9 - Provider Retry Diagnostics
  *
  * Security:
  * - No API keys or credentials stored
@@ -41,6 +41,9 @@ export type AIProviderDiagnostic = Readonly<{
   errorCode: AIProviderErrorCode;
   durationMs: number;
   candidateCount: number;
+  attemptCount?: number;
+  retryCount?: number;
+  lastRetryErrorCode?: AIProviderErrorCode;
 }>;
 
 export type AIProviderMetrics = Readonly<{
@@ -175,6 +178,46 @@ export class AIProviderDiagnostics {
           ? candidateCount
           : 0,
     };
+
+    if (
+      event.attemptCount !== undefined ||
+      event.retryCount !== undefined ||
+      event.lastRetryErrorCode !== undefined
+    ) {
+      const attemptCount =
+        normalizeNonNegativeInteger(
+          event.attemptCount,
+          3
+        );
+
+      const retryCount =
+        normalizeNonNegativeInteger(
+          event.retryCount,
+          2
+        );
+
+      const boundedRetryCount = Math.min(
+        retryCount,
+        Math.max(0, attemptCount - 1)
+      );
+
+      const lastRetryErrorCode =
+        isAllowedErrorCode(
+          event.lastRetryErrorCode
+        ) &&
+        event.lastRetryErrorCode !== "NONE"
+          ? event.lastRetryErrorCode
+          : "NONE";
+
+      Object.assign(safeEvent, {
+        attemptCount,
+        retryCount: boundedRetryCount,
+        lastRetryErrorCode:
+          boundedRetryCount > 0
+            ? lastRetryErrorCode
+            : "NONE",
+      });
+    }
 
     this.events.push(safeEvent);
 
