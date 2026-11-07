@@ -9,6 +9,11 @@ import type {
 import fs from "node:fs";
 import path from "node:path";
 
+import type { AIRecoveryAuditEvent } from "../ai/AIRecoveryAudit";
+
+/**
+ * Deterministic locator healing event.
+ */
 export type HealingAuditEvent = {
   event: "LOCATOR_HEALED";
   timestamp: string;
@@ -18,6 +23,9 @@ export type HealingAuditEvent = {
   confidence: number;
 };
 
+/**
+ * Individual Playwright test attempt.
+ */
 export type TestRecord = {
   title: string;
   project: string;
@@ -25,9 +33,15 @@ export type TestRecord = {
   durationMs: number;
   retry: number;
   error?: string;
+
   healingEvents: HealingAuditEvent[];
+  aiRecoveryEvents: AIRecoveryAuditEvent[];
 };
 
+/**
+ * Existing deterministic healing summary.
+ * Keep this structure backward compatible.
+ */
 export type HealingSummary = {
   totalEvents: number;
   healedAttempts: number;
@@ -35,24 +49,50 @@ export type HealingSummary = {
   events: HealingAuditEvent[];
 };
 
+/**
+ * Phase 3.7 AI recovery analytics.
+ *
+ * AI suggestions are advisory.
+ * They are not counted as healed locators.
+ */
+export type AIRecoverySummary = {
+  totalEvaluations: number;
+  suggested: number;
+  noCandidate: number;
+  disabled: number;
+  failed: number;
+  evaluatedCandidates: number;
+  averageConfidence: number | null;
+  events: AIRecoveryAuditEvent[];
+};
+
 class AutoHealReporter implements Reporter {
   private readonly records: TestRecord[] = [];
 
   private startedAt = new Date();
 
+  /**
+   * Initialize a new test execution.
+   */
   onBegin(): void {
     this.records.length = 0;
     this.startedAt = new Date();
 
-    console.log("[AutoHeal QA] Reporter initialized");
+    console.log(
+      "[AutoHeal QA] Reporter initialized"
+    );
   }
 
+  /**
+   * Validate a deterministic healing audit event.
+   */
   private isHealingAuditEvent(
     value: unknown
   ): value is HealingAuditEvent {
     if (
       typeof value !== "object" ||
-      value === null
+      value === null ||
+      Array.isArray(value)
     ) {
       return false;
     }
@@ -62,16 +102,105 @@ class AutoHealReporter implements Reporter {
     return (
       event.event === "LOCATOR_HEALED" &&
       typeof event.timestamp === "string" &&
+      Number.isFinite(Date.parse(event.timestamp)) &&
       typeof event.primarySelector === "string" &&
+      event.primarySelector.length > 0 &&
       typeof event.recoveredSelector === "string" &&
+      event.recoveredSelector.length > 0 &&
       typeof event.strategy === "string" &&
+      event.strategy.length > 0 &&
       typeof event.confidence === "number" &&
       Number.isFinite(event.confidence) &&
-      event.confidence >= 0 &&
+      event.confidence >= 0.85 &&
       event.confidence <= 1
     );
   }
 
+  /**
+   * Validate a Phase 3.7 AI recovery audit event.
+   */
+  private isAIRecoveryAuditEvent(
+    value: unknown
+  ): value is AIRecoveryAuditEvent {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value)
+    ) {
+      return false;
+    }
+
+    const event = value as Record<string, unknown>;
+
+    const validStatuses = [
+      "SUGGESTED",
+      "NO_CANDIDATE",
+      "DISABLED",
+      "FAILED",
+    ];
+
+    return (
+      event.event === "AI_RECOVERY_EVALUATED" &&
+      typeof event.timestamp === "string" &&
+      Number.isFinite(Date.parse(event.timestamp)) &&
+      validStatuses.includes(String(event.status)) &&
+      typeof event.provider === "string" &&
+      event.provider.length > 0 &&
+      typeof event.evaluatedCandidates === "number" &&
+      Number.isSafeInteger(event.evaluatedCandidates) &&
+      event.evaluatedCandidates >= 0 &&
+      (
+        event.reason === undefined ||
+        typeof event.reason === "string"
+      ) &&
+      (
+        event.confidence === undefined ||
+        (
+          typeof event.confidence === "number" &&
+          Number.isFinite(event.confidence) &&
+          event.confidence >= 0 &&
+          event.confidence <= 1
+        )
+      )
+    );
+  }
+
+  /**
+   * Read the JSON content of a Playwright attachment.
+   *
+   * Attachments can contain an in-memory body
+   * or a filesystem path.
+   */
+  private readAttachment(
+    attachment: TestResult["attachments"][number]
+  ): unknown | null {
+    try {
+      let raw: string;
+
+      if (attachment.body) {
+        raw = attachment.body.toString("utf8");
+      } else if (attachment.path) {
+        raw = fs.readFileSync(
+          attachment.path,
+          "utf8"
+        );
+      } else {
+        return null;
+      }
+
+      return JSON.parse(raw) as unknown;
+    } catch {
+      console.warn(
+        "[AutoHeal QA] Failed to parse audit attachment"
+      );
+
+      return null;
+    }
+  }
+
+  /**
+   * Extract trusted deterministic healing events.
+   */
   private extractHealingEvents(
     result: TestResult
   ): HealingAuditEvent[] {
@@ -84,33 +213,13 @@ class AutoHealReporter implements Reporter {
         continue;
       }
 
-      try {
-        let raw: string;
+      const parsed = this.readAttachment(attachment);
 
-        if (attachment.body) {
-          raw = attachment.body.toString("utf8");
-        } else if (attachment.path) {
-          raw = fs.readFileSync(
-            attachment.path,
-            "utf8"
-          );
-        } else {
-          continue;
-        }
-
-        const parsed: unknown = JSON.parse(raw);
-
-        if (this.isHealingAuditEvent(parsed)) {
-          events.push(parsed);
-        } else {
-          console.warn(
-            "[AutoHeal QA] Invalid healing audit event structure"
-          );
-        }
-      } catch (error) {
+      if (this.isHealingAuditEvent(parsed)) {
+        events.push(parsed);
+      } else {
         console.warn(
-          "[AutoHeal QA] Failed to parse healing audit attachment:",
-          error
+          "[AutoHeal QA] Invalid healing audit event structure"
         );
       }
     }
@@ -118,6 +227,56 @@ class AutoHealReporter implements Reporter {
     return events;
   }
 
+  /**
+   * Extract advisory AI recovery evaluations.
+   *
+   * These events never indicate that an AI-generated
+   * selector was automatically executed.
+   */
+  private extractAIRecoveryEvents(
+    result: TestResult
+  ): AIRecoveryAuditEvent[] {
+    const events: AIRecoveryAuditEvent[] = [];
+
+    for (const attachment of result.attachments) {
+      if (
+        attachment.name !== "autoheal-ai-recovery-event"
+      ) {
+        continue;
+      }
+
+      const parsed = this.readAttachment(attachment);
+
+      if (this.isAIRecoveryAuditEvent(parsed)) {
+        // Explicitly allowlist AI audit properties to prevent
+        // unexpected attachment fields from entering reports.
+        const sanitized: AIRecoveryAuditEvent = {
+          event: parsed.event,
+          timestamp: parsed.timestamp,
+          status: parsed.status,
+          provider: parsed.provider,
+          evaluatedCandidates: parsed.evaluatedCandidates,
+          ...(parsed.reason !== undefined
+            ? { reason: parsed.reason }
+            : {}),
+          ...(parsed.confidence !== undefined
+            ? { confidence: parsed.confidence }
+            : {}),
+        };
+        events.push(sanitized);
+      } else {
+        console.warn(
+          "[AutoHeal QA] Invalid AI recovery audit event structure"
+        );
+      }
+    }
+
+    return events;
+  }
+
+  /**
+   * Record every Playwright test attempt.
+   */
   onTestEnd(
     test: TestCase,
     result: TestResult
@@ -129,10 +288,18 @@ class AutoHealReporter implements Reporter {
       durationMs: result.duration,
       retry: result.retry,
       error: result.error?.message,
+
       healingEvents: this.extractHealingEvents(result),
+
+      aiRecoveryEvents: this.extractAIRecoveryEvents(result),
     });
   }
 
+  /**
+   * Aggregate deterministic healing events.
+   *
+   * Existing reporting behavior is preserved.
+   */
   private buildHealingSummary(): HealingSummary {
     const events = this.records.flatMap(
       record => record.healingEvents
@@ -149,7 +316,8 @@ class AutoHealReporter implements Reporter {
         ? Number(
             (
               events.reduce(
-                (sum, event) => sum + event.confidence,
+                (sum, event) =>
+                  sum + event.confidence,
                 0
               ) / totalEvents
             ).toFixed(3)
@@ -164,26 +332,97 @@ class AutoHealReporter implements Reporter {
     };
   }
 
+  /**
+   * Aggregate Phase 3.7 advisory AI recovery events.
+   */
+  private buildAIRecoverySummary(): AIRecoverySummary {
+    const events = this.records.flatMap(
+      record => record.aiRecoveryEvents
+    );
+
+    const countStatus = (
+      status: AIRecoveryAuditEvent["status"]
+    ): number => {
+      return events.filter(
+        event => event.status === status
+      ).length;
+    };
+
+    const confidenceValues = events
+      .map(event => event.confidence)
+      .filter(
+        (value): value is number =>
+          typeof value === "number"
+      );
+
+    const averageConfidence =
+      confidenceValues.length > 0
+        ? Number(
+            (
+              confidenceValues.reduce(
+                (sum, confidence) =>
+                  sum + confidence,
+                0
+              ) / confidenceValues.length
+            ).toFixed(3)
+          )
+        : null;
+
+    return {
+      totalEvaluations: events.length,
+
+      suggested: countStatus("SUGGESTED"),
+
+      noCandidate: countStatus("NO_CANDIDATE"),
+
+      disabled: countStatus("DISABLED"),
+
+      failed: countStatus("FAILED"),
+
+      evaluatedCandidates: events.reduce(
+        (sum, event) =>
+          sum + event.evaluatedCandidates,
+        0
+      ),
+
+      averageConfidence,
+
+      events,
+    };
+  }
+
+  /**
+   * Generate the complete AutoHeal QA execution report.
+   */
   onEnd(result: FullResult): void {
-    // Test discovery does not produce test attempts.
-    // Never overwrite a real execution summary with
-    // an empty report.
+    /**
+     * Avoid overwriting the previous report
+     * when Playwright only discovers tests.
+     */
     if (this.records.length === 0) {
       console.log(
         "[AutoHeal QA] No test attempts recorded. " +
         "Preserving existing execution summary."
       );
+
       return;
     }
 
     const finishedAt = new Date();
+
     const healing = this.buildHealingSummary();
+
+    const aiRecovery = this.buildAIRecoverySummary();
 
     const summary = {
       framework: "AutoHeal QA",
+
       startedAt: this.startedAt.toISOString(),
+
       finishedAt: finishedAt.toISOString(),
+
       overallStatus: result.status,
+
       totalAttempts: this.records.length,
 
       passedAttempts: this.records.filter(
@@ -206,7 +445,19 @@ class AutoHealReporter implements Reporter {
         record => record.status === "interrupted"
       ).length,
 
+      /**
+       * Existing deterministic healing section.
+       */
       healing,
+
+      /**
+       * New Phase 3.7 advisory AI recovery section.
+       */
+      aiRecovery,
+
+      /**
+       * Individual test attempt details.
+       */
       tests: this.records,
     };
 
@@ -229,6 +480,10 @@ class AutoHealReporter implements Reporter {
       `summary.${process.pid}.tmp`
     );
 
+    /**
+     * Write the report using a temporary file
+     * before replacing the final JSON report.
+     */
     try {
       fs.writeFileSync(
         tempFile,
@@ -236,13 +491,21 @@ class AutoHealReporter implements Reporter {
         "utf8"
       );
 
-      fs.renameSync(tempFile, outputFile);
+      fs.renameSync(
+        tempFile,
+        outputFile
+      );
     } finally {
       if (fs.existsSync(tempFile)) {
-        fs.rmSync(tempFile, { force: true });
+        fs.rmSync(tempFile, {
+          force: true,
+        });
       }
     }
 
+    /**
+     * Execution statistics.
+     */
     console.log(
       `[AutoHeal QA] Report saved: ${outputFile}`
     );
@@ -259,6 +522,9 @@ class AutoHealReporter implements Reporter {
       `[AutoHeal QA] Failed attempts: ${summary.failedAttempts}`
     );
 
+    /**
+     * Deterministic healing statistics.
+     */
     console.log(
       `[AutoHeal QA] Healing events: ${healing.totalEvents}`
     );
@@ -270,6 +536,39 @@ class AutoHealReporter implements Reporter {
     if (healing.averageConfidence !== null) {
       console.log(
         `[AutoHeal QA] Average healing confidence: ${healing.averageConfidence}`
+      );
+    }
+
+    /**
+     * Phase 3.7 AI recovery statistics.
+     */
+    console.log(
+      `[AutoHeal QA] AI recovery evaluations: ${aiRecovery.totalEvaluations}`
+    );
+
+    console.log(
+      `[AutoHeal QA] AI suggestions: ${aiRecovery.suggested}`
+    );
+
+    console.log(
+      `[AutoHeal QA] AI recovery no-candidate results: ${aiRecovery.noCandidate}`
+    );
+
+    console.log(
+      `[AutoHeal QA] AI recovery disabled results: ${aiRecovery.disabled}`
+    );
+
+    console.log(
+      `[AutoHeal QA] AI recovery failures: ${aiRecovery.failed}`
+    );
+
+    console.log(
+      `[AutoHeal QA] AI evaluated candidates: ${aiRecovery.evaluatedCandidates}`
+    );
+
+    if (aiRecovery.averageConfidence !== null) {
+      console.log(
+        `[AutoHeal QA] Average AI suggestion confidence: ${aiRecovery.averageConfidence}`
       );
     }
   }

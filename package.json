@@ -21,8 +21,15 @@
     "report": "playwright show-report reports/html",
     "report:reliability": "playwright show-report reports/reliability-tests",
     "typecheck": "tsc --noEmit",
+    "test:reporting": "node --test tests/reporting/*.test.cjs",
     "validate": "npm run typecheck && npm run test:list",
+    "validate:report": "node scripts/validate-healing-report.cjs",
+    "test:gemini:smoke": "playwright test --config=playwright.gemini-smoke.config.ts",
+    "test:ai:all": "npm run test:ai:smoke && npm run test:gemini:smoke",
+    "validate:report:baseline": "node scripts/validate-healing-report.cjs --baseline",
     "validate:reliability": "npm run typecheck && npm run test:reliability",
+    "test:ai:smoke": "playwright test --config=playwright.ai-smoke.config.ts --grep-invert AI-SMOKE-003",
+    "test:ai:live": "playwright test --config=playwright.ai-smoke.config.ts --grep AI-SMOKE-003",
     "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\""
   },
   "keywords": [

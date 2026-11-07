@@ -13,10 +13,20 @@ export default defineConfig({
   testDir: "./tests",
 
   /**
+ * Discover Playwright specifications only.
+ * Exclude Node.js reporting regression tests.
+ */
+testMatch: "**/*.spec.ts",
+
+  /**
    * Exclude isolated reliability tests from
    * the main cross-browser suite.
    */
-  testIgnore: ["**/reliability/**"],
+  testIgnore: [
+  "**/reliability/**",
+  "**/live-ai/**",
+  "**/gemini/**",
+],
 
   /**
    * Enable parallel test execution.
