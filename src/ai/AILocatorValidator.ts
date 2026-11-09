@@ -72,8 +72,6 @@ export class AILocatorValidator {
       return reject("LOW_CONFIDENCE");
     }
 
-    // Accept only CSS selectors in this phase.
-    // Reject Playwright selector engines and unsafe syntax.
     const selector = candidate.selector.trim();
 
     if (
@@ -84,12 +82,27 @@ export class AILocatorValidator {
       return reject("INVALID_SELECTOR");
     }
 
-    let locator;
+    // Shared deadline for all browser validation operations.
+    const deadline = performance.now() + timeoutMs;
+
+    const remainingTimeout = (): number => {
+      const remaining = deadline - performance.now();
+
+      if (remaining <= 0) {
+        throw new Error("VALIDATION_DEADLINE_EXCEEDED");
+      }
+
+      return Math.max(1, Math.ceil(remaining));
+    };
 
     try {
-      locator = this.page.locator(`css=${selector}`);
+      const locator = this.page.locator(`css=${selector}`);
+
+            remainingTimeout();
 
       const count = await locator.count();
+
+      remainingTimeout();
 
       if (count === 0) {
         return reject("NO_MATCH");
@@ -100,31 +113,41 @@ export class AILocatorValidator {
       }
 
       const visible = await locator.isVisible({
-        timeout: timeoutMs,
+        timeout: remainingTimeout(),
       });
+
+      remainingTimeout();
 
       if (!visible) {
         return reject("NOT_VISIBLE");
       }
 
-      const unsafeTarget = await locator.evaluate((element) => {
-        const tag = element.tagName.toLowerCase();
+      const unsafeTarget = await locator.evaluate(
+        (element) => {
+          const tag = element.tagName.toLowerCase();
 
-        const inputType =
-          element.getAttribute("type")?.toLowerCase();
+          const inputType =
+            element.getAttribute("type")?.toLowerCase();
 
-        return (
-          element.closest(
-            '[hidden], [aria-hidden="true"], [inert]'
-          ) !== null ||
-          (
-            tag === "input" &&
-            ["password", "hidden", "file"].includes(
-              inputType ?? ""
+          return (
+            element.closest(
+              '[hidden], [aria-hidden="true"], [inert]'
+            ) !== null ||
+            (
+              tag === "input" &&
+              ["password", "hidden", "file"].includes(
+                inputType ?? ""
+              )
             )
-          )
-        );
-      });
+          );
+        },
+        undefined,
+        {
+          timeout: remainingTimeout(),
+        }
+      );
+
+      remainingTimeout();
 
       if (unsafeTarget) {
         return reject("UNSAFE_TARGET");
@@ -136,6 +159,7 @@ export class AILocatorValidator {
         confidence: candidate.confidence,
       };
     } catch {
+      // Fail closed without exposing browser errors.
       return reject("INVALID_SELECTOR");
     }
   }
