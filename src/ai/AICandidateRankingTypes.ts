@@ -19,4 +19,12 @@ export type AICandidateRankingResult = {
   score: number;
   eligible: boolean;
   reasons: AICandidateRankingReason[];
+
+  /**
+   * Original position in the rank() input array.
+   *
+   * Optional for backward compatibility with
+   * existing consumers of ranking results.
+   */
+  inputIndex?: number;
 };
