@@ -98,13 +98,11 @@ export class AILocatorValidator {
     try {
       const locator = this.page.locator(`css=${selector}`);
 
+            remainingTimeout();
+
+      const count = await locator.count();
+
       remainingTimeout();
-
-const count = await locator.count();
-
-remainingTimeout();
-
-
 
       if (count === 0) {
         return reject("NO_MATCH");
