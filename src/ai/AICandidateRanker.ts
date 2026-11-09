@@ -15,23 +15,19 @@ import type {
  * - Does not perform browser actions.
  * - Does not log raw selectors or DOM content.
  *
- * IMPORTANT:
- * uniqueMatch and visible must be supplied by
- * trusted Playwright validation, not by an AI provider.
- *
- * This ranker does not independently establish
- * selector safety or DOM validity.
+ * uniqueMatch and visible must come from trusted
+ * Playwright validation, not an AI provider.
  */
 export class AICandidateRanker {
   rank(
-    candidates: readonly AICandidateRankingInput[]
+    candidates: readonly AICandidateRankingInput[],
+    options: { includeInputIndex?: boolean } = {}
   ): AICandidateRankingResult[] {
     const seenSelectors = new Set<string>();
 
     const ranked = candidates.map((candidate, index) => {
       const reasons: AICandidateRankingReason[] = [];
 
-      // Handle malformed runtime input safely.
       const selector =
         typeof candidate?.selector === "string"
           ? candidate.selector.trim()
@@ -67,7 +63,6 @@ export class AICandidateRanker {
         reasons.push("NOT_VISIBLE");
       }
 
-      // Detect duplicates after normalization.
       if (validSelector) {
         if (seenSelectors.has(selector)) {
           reasons.push("DUPLICATE_SELECTOR");
@@ -78,8 +73,6 @@ export class AICandidateRanker {
 
       const eligible = reasons.length === 0;
 
-      // Keep full confidence precision.
-      // Invalid candidates always receive score 0.
       const score = eligible
         ? confidence * 100
         : 0;
@@ -90,6 +83,9 @@ export class AICandidateRanker {
         score,
         eligible,
         reasons,
+        ...(options.includeInputIndex
+          ? { inputIndex: index }
+          : {}),
       };
 
       return {
@@ -99,12 +95,10 @@ export class AICandidateRanker {
     });
 
     ranked.sort((a, b) => {
-      // Eligible candidates always come first.
       if (a.result.eligible !== b.result.eligible) {
         return a.result.eligible ? -1 : 1;
       }
 
-      // Sort eligible candidates by confidence score.
       const scoreDifference =
         b.result.score - a.result.score;
 
@@ -112,7 +106,6 @@ export class AICandidateRanker {
         return scoreDifference;
       }
 
-      // Preserve original input order for ties.
       return a.index - b.index;
     });
 

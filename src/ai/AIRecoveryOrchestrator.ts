@@ -15,6 +15,11 @@ import type {
   AICandidateRankingInput,
 } from "./AICandidateRankingTypes";
 
+import type {
+  AICandidateDecisionRecord,
+  AIRecoveryExplanation,
+} from "./AIRecoveryExplainabilityTypes";
+
 import {
   isAuthorizedProductionProvider,
 } from "./AIProviderFactory";
@@ -26,10 +31,14 @@ import type {
 
 export class AIRecoveryOrchestrator {
   private readonly extractor: DOMContextExtractor;
+
   private readonly requestBuilder =
     new AIRequestBuilder();
+
   private readonly validator: AILocatorValidator;
-  private readonly ranker = new AICandidateRanker();
+
+  private readonly ranker =
+    new AICandidateRanker();
 
   constructor(
     page: Page,
@@ -44,12 +53,16 @@ export class AIRecoveryOrchestrator {
     options: AIRecoveryOptions = {}
   ): Promise<AIRecoveryResult> {
     const enabled = options.enabled ?? false;
+
     const minimumConfidence =
       options.minimumConfidence ?? 0.85;
+
     const providerTimeoutMs =
       options.providerTimeoutMs ?? 3000;
+
     const maxCandidates =
       options.maxCandidates ?? 5;
+
     const validationTimeoutMs =
       options.validationTimeoutMs ?? 3000;
 
@@ -96,16 +109,54 @@ export class AIRecoveryOrchestrator {
     const providerName =
       this.provider?.name ?? "disabled";
 
+    let evaluatedCandidates = 0;
+
+    const decisions: AICandidateDecisionRecord[] = [];
+
+    let validationStartedAt: number | undefined;
+
+    const buildExplanation = (): AIRecoveryExplanation => ({
+      evaluatedCandidates,
+
+      acceptedCandidates: decisions.filter(
+        (record) => record.decision === "ACCEPTED"
+      ).length,
+
+      rejectedCandidates: decisions.filter(
+        (record) => record.decision === "REJECTED"
+      ).length,
+
+      validationDurationMs:
+        validationStartedAt === undefined
+          ? 0
+          : Math.max(
+              0,
+              performance.now() - validationStartedAt
+            ),
+
+      decisions: decisions.map((record) => ({
+        candidateIndex: record.candidateIndex,
+        decision: record.decision,
+        reasons: [...record.reasons],
+        ...(record.validationDurationMs !== undefined
+          ? {
+              validationDurationMs:
+                record.validationDurationMs,
+            }
+          : {}),
+      })),
+    });
+
     const createResult = (
       status: AIRecoveryResult["status"],
-      reason?: string,
-      evaluatedCandidates = 0
+      reason?: string
     ): AIRecoveryResult => ({
       status,
       provider: providerName,
       primarySelector,
       evaluatedCandidates,
       ...(reason ? { reason } : {}),
+      explanation: buildExplanation(),
     });
 
     if (!enabled || !this.provider) {
@@ -122,8 +173,6 @@ export class AIRecoveryOrchestrator {
         "PROVIDER_NOT_ALLOWED"
       );
     }
-
-    let evaluatedCandidates = 0;
 
     try {
       const context = await this.extractor.extract({
@@ -145,9 +194,12 @@ export class AIRecoveryOrchestrator {
       try {
         candidates = await Promise.race([
           this.provider.suggestLocators(request),
+
           new Promise<never>((_, reject) => {
             providerTimer = setTimeout(
-              () => reject(new Error("PROVIDER_TIMEOUT")),
+              () => reject(
+                new Error("PROVIDER_TIMEOUT")
+              ),
               providerTimeoutMs
             );
           }),
@@ -193,28 +245,62 @@ export class AIRecoveryOrchestrator {
       const validatedInputs:
         AICandidateRankingInput[] = [];
 
-      const deadline =
-        performance.now() + validationTimeoutMs;
+      const validatedDecisionIndices: number[] = [];
 
-      for (const candidate of sortedCandidates) {
+      validationStartedAt = performance.now();
+
+      const deadline =
+        validationStartedAt + validationTimeoutMs;
+
+      const markNotEvaluated = (
+        fromIndex: number
+      ): void => {
+        for (
+          let index = fromIndex;
+          index < sortedCandidates.length;
+          index++
+        ) {
+          decisions.push({
+            candidateIndex: index,
+            decision: "NOT_EVALUATED",
+            reasons: ["VALIDATION_TIMEOUT"],
+          });
+        }
+      };
+
+      for (
+        const [candidateIndex, candidate]
+        of sortedCandidates.entries()
+      ) {
         const remainingMs =
           deadline - performance.now();
 
         if (remainingMs <= 0) {
+          markNotEvaluated(candidateIndex);
+
           return createResult(
             "FAILED",
-            "VALIDATION_TIMEOUT",
-            evaluatedCandidates
+            "VALIDATION_TIMEOUT"
           );
         }
 
         evaluatedCandidates++;
+
+        const startedAt = performance.now();
 
         if (
           !candidate ||
           typeof candidate.selector !== "string" ||
           typeof candidate.confidence !== "number"
         ) {
+          decisions.push({
+            candidateIndex,
+            decision: "REJECTED",
+            reasons: ["MALFORMED_CANDIDATE"],
+            validationDurationMs:
+              performance.now() - startedAt,
+          });
+
           continue;
         }
 
@@ -230,35 +316,74 @@ export class AIRecoveryOrchestrator {
           const validationPromise =
             this.validator.validate(candidate, {
               minConfidence: minimumConfidence,
+
               timeoutMs: Math.max(
                 1,
-                Math.min(1000, Math.floor(remainingMs))
+                Math.min(
+                  1000,
+                  Math.floor(remainingMs)
+                )
               ),
             });
 
           const validation = await Promise.race([
             validationPromise,
+
             new Promise<typeof timeoutMarker>(
               (resolve) => {
                 validationTimer = setTimeout(
                   () => resolve(timeoutMarker),
-                  Math.max(1, Math.ceil(remainingMs))
+                  Math.max(
+                    1,
+                    Math.ceil(remainingMs)
+                  )
                 );
               }
             ),
           ]);
 
+          const validationDurationMs =
+            performance.now() - startedAt;
+
           if (validation === timeoutMarker) {
+            decisions.push({
+              candidateIndex,
+              decision: "REJECTED",
+              reasons: ["VALIDATION_TIMEOUT"],
+              validationDurationMs,
+            });
+
+            markNotEvaluated(candidateIndex + 1);
+
             return createResult(
               "FAILED",
-              "VALIDATION_TIMEOUT",
-              evaluatedCandidates
+              "VALIDATION_TIMEOUT"
             );
           }
 
           if (!validation.valid) {
+            decisions.push({
+              candidateIndex,
+              decision: "REJECTED",
+              reasons: [
+                validation.reason ?? "INVALID_SELECTOR",
+              ],
+              validationDurationMs,
+            });
+
             continue;
           }
+
+          decisions.push({
+            candidateIndex,
+            decision: "ACCEPTED",
+            reasons: [],
+            validationDurationMs,
+          });
+
+          validatedDecisionIndices.push(
+            decisions.length - 1
+          );
 
           validatedInputs.push({
             selector: validation.selector,
@@ -276,14 +401,39 @@ export class AIRecoveryOrchestrator {
       if (performance.now() >= deadline) {
         return createResult(
           "FAILED",
-          "VALIDATION_TIMEOUT",
-          evaluatedCandidates
+          "VALIDATION_TIMEOUT"
         );
       }
 
       const ranked = this.ranker.rank(
-        validatedInputs
+        validatedInputs,
+        { includeInputIndex: true }
       );
+
+      for (const candidate of ranked) {
+        if (candidate.inputIndex === undefined) {
+          continue;
+        }
+
+        const decisionIndex =
+          validatedDecisionIndices[
+            candidate.inputIndex
+          ];
+
+        const decision =
+          decisions[decisionIndex];
+
+        if (!decision) {
+          continue;
+        }
+
+        if (!candidate.eligible) {
+          decision.decision = "REJECTED";
+          decision.reasons = [
+            ...candidate.reasons,
+          ];
+        }
+      }
 
       const best = ranked.find(
         (candidate) => candidate.eligible
@@ -292,8 +442,7 @@ export class AIRecoveryOrchestrator {
       if (!best) {
         return createResult(
           "NO_CANDIDATE",
-          "NO_VALID_CANDIDATE",
-          evaluatedCandidates
+          "NO_VALID_CANDIDATE"
         );
       }
 
@@ -304,12 +453,12 @@ export class AIRecoveryOrchestrator {
         suggestedSelector: best.selector,
         confidence: best.confidence,
         evaluatedCandidates,
+        explanation: buildExplanation(),
       };
     } catch {
       return createResult(
         "FAILED",
-        "RECOVERY_PIPELINE_FAILED",
-        evaluatedCandidates
+        "RECOVERY_PIPELINE_FAILED"
       );
     }
   }
