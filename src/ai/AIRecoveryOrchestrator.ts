@@ -6,17 +6,14 @@ import type {
   AILocatorCandidate,
 } from "./AIProvider";
 
-import {
-  DOMContextExtractor,
-} from "./DOMContextExtractor";
+import { DOMContextExtractor } from "./DOMContextExtractor";
+import { AIRequestBuilder } from "./AIRequestBuilder";
+import { AILocatorValidator } from "./AILocatorValidator";
+import { AICandidateRanker } from "./AICandidateRanker";
 
-import {
-  AIRequestBuilder,
-} from "./AIRequestBuilder";
-
-import {
-  AILocatorValidator,
-} from "./AILocatorValidator";
+import type {
+  AICandidateRankingInput,
+} from "./AICandidateRankingTypes";
 
 import {
   isAuthorizedProductionProvider,
@@ -27,25 +24,12 @@ import type {
   AIRecoveryResult,
 } from "./AIRecoveryTypes";
 
-/**
- * Coordinates AI-assisted locator recovery.
- *
- * Security rules:
- * - Disabled by default.
- * - Supports existing mock providers.
- * - Production OpenAI providers require factory authorization.
- * - DOM context is sanitized before provider requests.
- * - Candidate selectors are validated.
- * - Suggestions are advisory only.
- * - Provider errors fail safely.
- */
 export class AIRecoveryOrchestrator {
   private readonly extractor: DOMContextExtractor;
-
   private readonly requestBuilder =
     new AIRequestBuilder();
-
   private readonly validator: AILocatorValidator;
+  private readonly ranker = new AICandidateRanker();
 
   constructor(
     page: Page,
@@ -60,17 +44,15 @@ export class AIRecoveryOrchestrator {
     options: AIRecoveryOptions = {}
   ): Promise<AIRecoveryResult> {
     const enabled = options.enabled ?? false;
-
     const minimumConfidence =
       options.minimumConfidence ?? 0.85;
-
     const providerTimeoutMs =
       options.providerTimeoutMs ?? 3000;
-
     const maxCandidates =
       options.maxCandidates ?? 5;
+    const validationTimeoutMs =
+      options.validationTimeoutMs ?? 3000;
 
-    // Validate recovery configuration.
     if (
       !Number.isFinite(minimumConfidence) ||
       minimumConfidence < 0 ||
@@ -101,6 +83,16 @@ export class AIRecoveryOrchestrator {
       );
     }
 
+    if (
+      !Number.isSafeInteger(validationTimeoutMs) ||
+      validationTimeoutMs < 1 ||
+      validationTimeoutMs > 10000
+    ) {
+      throw new Error(
+        "validationTimeoutMs must be an integer between 1 and 10000"
+      );
+    }
+
     const providerName =
       this.provider?.name ?? "disabled";
 
@@ -116,21 +108,15 @@ export class AIRecoveryOrchestrator {
       ...(reason ? { reason } : {}),
     });
 
-    // AI recovery must be explicitly enabled.
     if (!enabled || !this.provider) {
       return createResult("DISABLED");
     }
 
-    // Keep existing mock-provider compatibility.
-    const isMockProvider =
-      providerName === "mock";
-
-    // Production providers must have been
-    // constructed by the authorized factory.
-    const isAuthorizedOpenAI =
+    const authorized =
+      providerName === "mock" ||
       isAuthorizedProductionProvider(this.provider);
 
-    if (!isMockProvider && !isAuthorizedOpenAI) {
+    if (!authorized) {
       return createResult(
         "DISABLED",
         "PROVIDER_NOT_ALLOWED"
@@ -140,21 +126,17 @@ export class AIRecoveryOrchestrator {
     let evaluatedCandidates = 0;
 
     try {
-      // Step 1: Extract bounded DOM context.
       const context = await this.extractor.extract({
         maxElements: 100,
         maxTextLength: 120,
       });
 
-      // Step 2: Build a sanitized, bounded request.
       const request = this.requestBuilder.build(
         primarySelector,
         context
       );
 
-      // Step 3: Ask the authorized provider
-      // for candidate selectors.
-      let timeoutHandle:
+      let providerTimer:
         | ReturnType<typeof setTimeout>
         | undefined;
 
@@ -163,22 +145,19 @@ export class AIRecoveryOrchestrator {
       try {
         candidates = await Promise.race([
           this.provider.suggestLocators(request),
-
           new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(() => {
-              reject(
-                new Error("PROVIDER_TIMEOUT")
-              );
-            }, providerTimeoutMs);
+            providerTimer = setTimeout(
+              () => reject(new Error("PROVIDER_TIMEOUT")),
+              providerTimeoutMs
+            );
           }),
         ]);
       } finally {
-        if (timeoutHandle !== undefined) {
-          clearTimeout(timeoutHandle);
+        if (providerTimer !== undefined) {
+          clearTimeout(providerTimer);
         }
       }
 
-      // Step 4: Validate provider response.
       if (!Array.isArray(candidates)) {
         return createResult(
           "FAILED",
@@ -193,31 +172,42 @@ export class AIRecoveryOrchestrator {
         );
       }
 
-      // Limit evaluated candidates.
-      const boundedCandidates =
-        candidates.slice(0, maxCandidates);
+      const sortedCandidates = candidates
+        .slice(0, maxCandidates)
+        .sort((a, b) => {
+          const left =
+            typeof a?.confidence === "number" &&
+            Number.isFinite(a.confidence)
+              ? a.confidence
+              : -1;
 
-      // Highest-confidence candidates first.
-      const sortedCandidates = [
-        ...boundedCandidates,
-      ].sort((a, b) => {
-        const left =
-          typeof a?.confidence === "number" &&
-          Number.isFinite(a.confidence)
-            ? a.confidence
-            : -1;
+          const right =
+            typeof b?.confidence === "number" &&
+            Number.isFinite(b.confidence)
+              ? b.confidence
+              : -1;
 
-        const right =
-          typeof b?.confidence === "number" &&
-          Number.isFinite(b.confidence)
-            ? b.confidence
-            : -1;
+          return right - left;
+        });
 
-        return right - left;
-      });
+      const validatedInputs:
+        AICandidateRankingInput[] = [];
 
-      // Step 5: Validate suggested selectors.
+      const deadline =
+        performance.now() + validationTimeoutMs;
+
       for (const candidate of sortedCandidates) {
+        const remainingMs =
+          deadline - performance.now();
+
+        if (remainingMs <= 0) {
+          return createResult(
+            "FAILED",
+            "VALIDATION_TIMEOUT",
+            evaluatedCandidates
+          );
+        }
+
         evaluatedCandidates++;
 
         if (
@@ -228,40 +218,94 @@ export class AIRecoveryOrchestrator {
           continue;
         }
 
-        const validation =
-          await this.validator.validate(
-            candidate,
-            {
+        let validationTimer:
+          | ReturnType<typeof setTimeout>
+          | undefined;
+
+        const timeoutMarker = Symbol(
+          "VALIDATION_TIMEOUT"
+        );
+
+        try {
+          const validationPromise =
+            this.validator.validate(candidate, {
               minConfidence: minimumConfidence,
-              timeoutMs: 1000,
-            }
-          );
+              timeoutMs: Math.max(
+                1,
+                Math.min(1000, Math.floor(remainingMs))
+              ),
+            });
 
-        if (!validation.valid) {
-          continue;
+          const validation = await Promise.race([
+            validationPromise,
+            new Promise<typeof timeoutMarker>(
+              (resolve) => {
+                validationTimer = setTimeout(
+                  () => resolve(timeoutMarker),
+                  Math.max(1, Math.ceil(remainingMs))
+                );
+              }
+            ),
+          ]);
+
+          if (validation === timeoutMarker) {
+            return createResult(
+              "FAILED",
+              "VALIDATION_TIMEOUT",
+              evaluatedCandidates
+            );
+          }
+
+          if (!validation.valid) {
+            continue;
+          }
+
+          validatedInputs.push({
+            selector: validation.selector,
+            confidence: validation.confidence,
+            uniqueMatch: true,
+            visible: true,
+          });
+        } finally {
+          if (validationTimer !== undefined) {
+            clearTimeout(validationTimer);
+          }
         }
-
-        // Advisory result only.
-        // Do not click, fill, or automatically
-        // execute this selector.
-        return {
-          status: "SUGGESTED",
-          provider: providerName,
-          primarySelector,
-          suggestedSelector: validation.selector,
-          confidence: validation.confidence,
-          evaluatedCandidates,
-        };
       }
 
-      return createResult(
-        "NO_CANDIDATE",
-        "NO_VALID_CANDIDATE",
-        evaluatedCandidates
+      if (performance.now() >= deadline) {
+        return createResult(
+          "FAILED",
+          "VALIDATION_TIMEOUT",
+          evaluatedCandidates
+        );
+      }
+
+      const ranked = this.ranker.rank(
+        validatedInputs
       );
+
+      const best = ranked.find(
+        (candidate) => candidate.eligible
+      );
+
+      if (!best) {
+        return createResult(
+          "NO_CANDIDATE",
+          "NO_VALID_CANDIDATE",
+          evaluatedCandidates
+        );
+      }
+
+      return {
+        status: "SUGGESTED",
+        provider: providerName,
+        primarySelector,
+        suggestedSelector: best.selector,
+        confidence: best.confidence,
+        evaluatedCandidates,
+      };
     } catch {
-      // Never expose raw provider errors,
-      // DOM snapshots, or request payloads.
       return createResult(
         "FAILED",
         "RECOVERY_PIPELINE_FAILED",
