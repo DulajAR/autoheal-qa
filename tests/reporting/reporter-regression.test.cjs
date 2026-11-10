@@ -509,3 +509,142 @@ test(
     );
   }
 );
+
+// --------------------------------------------------
+// Phase 4.3 — Decision analytics regression tests
+// --------------------------------------------------
+
+function createDecisionAnalytics(overrides = {}) {
+  return {
+    acceptedCandidates: 1,
+    rejectedCandidates: 1,
+    notEvaluatedCandidates: 1,
+    validationDurationMs: 120,
+    rejectionReasons: { NO_MATCH: 1 },
+    ...overrides,
+  };
+}
+
+test("REP-010: aggregates AI decision analytics", () => {
+  const report = executeReporter(reporter => {
+    for (let index = 0; index < 2; index++) {
+      reporter.onTestEnd(
+        createTest("chromium", `analytics-${index}`),
+        createResult([
+          createAttachment("autoheal-ai-recovery-event", createAIEvent({
+            evaluatedCandidates: 3,
+            analytics: createDecisionAnalytics(),
+          })),
+        ])
+      );
+    }
+  });
+
+  const analytics = report.aiRecovery.decisionAnalytics;
+  assert.equal(analytics.eventsWithAnalytics, 2);
+  assert.equal(analytics.acceptedCandidates, 2);
+  assert.equal(analytics.rejectedCandidates, 2);
+  assert.equal(analytics.notEvaluatedCandidates, 2);
+  assert.equal(analytics.totalValidationDurationMs, 240);
+  assert.equal(analytics.averageValidationDurationMs, 120);
+  assert.equal(analytics.rejectionReasons.NO_MATCH, 2);
+});
+
+test("REP-011: supports historical AI events without analytics", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("firefox", "legacy"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent()),
+      ])
+    );
+  });
+
+  assert.equal(report.aiRecovery.totalEvaluations, 1);
+  assert.equal(report.aiRecovery.decisionAnalytics.eventsWithAnalytics, 0);
+  assert.equal(report.aiRecovery.decisionAnalytics.averageValidationDurationMs, null);
+});
+
+test("REP-012: rejects negative analytics counts", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("chromium", "invalid-count"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent({
+          evaluatedCandidates: 3,
+          analytics: createDecisionAnalytics({ rejectedCandidates: -1 }),
+        })),
+      ])
+    );
+  });
+  assert.equal(report.aiRecovery.totalEvaluations, 0);
+});
+
+test("REP-013: rejects unknown rejection reasons", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("chromium", "unknown-reason"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent({
+          evaluatedCandidates: 3,
+          analytics: createDecisionAnalytics({
+            rejectionReasons: { PRIVATE_SELECTOR: 1 },
+          }),
+        })),
+      ])
+    );
+  });
+  assert.equal(report.aiRecovery.totalEvaluations, 0);
+});
+
+test("REP-014: excludes unexpected nested analytics fields", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("chromium", "analytics-privacy"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent({
+          evaluatedCandidates: 3,
+          analytics: createDecisionAnalytics({
+            suggestedSelector: "#private",
+            rawDOM: "<secret>",
+          }),
+        })),
+      ])
+    );
+  });
+
+  const event = report.aiRecovery.events[0];
+  assert.ok(event.analytics);
+  assert.equal(Object.hasOwn(event.analytics, "suggestedSelector"), false);
+  assert.equal(Object.hasOwn(event.analytics, "rawDOM"), false);
+});
+
+test("REP-015: rejects inconsistent candidate totals", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("chromium", "inconsistent-total"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent({
+          evaluatedCandidates: 1,
+          analytics: createDecisionAnalytics(),
+        })),
+      ])
+    );
+  });
+  assert.equal(report.aiRecovery.totalEvaluations, 0);
+});
+
+test("REP-016: rejects invalid validation duration", () => {
+  const report = executeReporter(reporter => {
+    reporter.onTestEnd(
+      createTest("chromium", "invalid-duration"),
+      createResult([
+        createAttachment("autoheal-ai-recovery-event", createAIEvent({
+          evaluatedCandidates: 3,
+          analytics: createDecisionAnalytics({ validationDurationMs: -10 }),
+        })),
+      ])
+    );
+  });
+  assert.equal(report.aiRecovery.totalEvaluations, 0);
+});
