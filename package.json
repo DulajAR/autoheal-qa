@@ -7,6 +7,7 @@
   "main": "index.js",
   "scripts": {
     "test": "playwright test",
+    "test:dashboard": "playwright test --config=playwright.dashboard.config.ts",
     "test:chromium": "playwright test --project=chromium",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
