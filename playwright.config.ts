@@ -18,15 +18,18 @@ export default defineConfig({
  */
 testMatch: "**/*.spec.ts",
 
+
   /**
-   * Exclude isolated reliability tests from
-   * the main cross-browser suite.
+   * Exclude isolated test suites from
+   * the main cross-browser execution.
    */
   testIgnore: [
-  "**/reliability/**",
-  "**/live-ai/**",
-  "**/gemini/**",
-],
+    "**/reliability/**",
+    "**/live-ai/**",
+    "**/gemini/**",
+    "**/dashboard/**",
+  ],
+
 
   /**
    * Enable parallel test execution.
