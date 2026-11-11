@@ -121,16 +121,80 @@ test.describe("AI Locator Candidate Validation", () => {
 
     await expect(
       validator.validate(
-        { selector: "#submit", confidence: 0.95 },
-        { minConfidence: 1.5 }
+        {
+          selector: "#submit",
+          confidence: 0.95,
+        },
+        {
+          minConfidence: 1.5,
+        }
       )
     ).rejects.toThrow();
 
     await expect(
       validator.validate(
-        { selector: "#submit", confidence: 0.95 },
-        { timeoutMs: 0 }
+        {
+          selector: "#submit",
+          confidence: 0.95,
+        },
+        {
+          timeoutMs: 0,
+        }
       )
     ).rejects.toThrow();
+  });
+
+  /**
+   * Phase 4.6 - Validation Deadline Classification
+   *
+   * Simulates a delayed locator count operation.
+   *
+   * Expected behavior:
+   * - Validation fails closed.
+   * - No candidate is accepted.
+   * - The rejection reason is VALIDATION_TIMEOUT.
+   */
+  test("AIV-011: expired validation deadline is classified", async ({
+    page,
+  }) => {
+    const validator = new AILocatorValidator(page);
+
+    const originalLocator = page.locator.bind(page);
+
+    const delayedLocator = {
+      count: async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 50);
+        });
+
+        return 1;
+      },
+    };
+
+    page.locator = (() =>
+      delayedLocator) as unknown as typeof page.locator;
+
+    try {
+      const result = await validator.validate(
+        {
+          selector: "#submit",
+          confidence: 0.95,
+        },
+        {
+          timeoutMs: 5,
+        }
+      );
+
+      expect(result.valid).toBe(false);
+
+      expect(result.reason).toBe(
+        "VALIDATION_TIMEOUT"
+      );
+
+      expect(result.selector).toBe("#submit");
+    } finally {
+      // Restore Playwright's original locator method.
+      page.locator = originalLocator;
+    }
   });
 });
