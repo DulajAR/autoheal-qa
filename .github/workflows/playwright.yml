@@ -19,7 +19,7 @@ permissions:
   contents: read
   actions: read
 
-# Prevent overlapping executions for the same source branch.
+# Preserve sequential history processing for each source branch.
 concurrency:
   group: autoheal-history-${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.head_ref || github.ref_name }}
   cancel-in-progress: false
@@ -54,8 +54,7 @@ jobs:
       - name: Validate TypeScript
         run: npm run typecheck
 
-      # 6. Clear previous execution outputs.
-      # Never delete historical history.json here.
+      # 6. Prepare fresh execution outputs
       - name: Prepare fresh AutoHeal execution
         id: prepare
         shell: bash
@@ -75,8 +74,7 @@ jobs:
           echo "Previous execution reports removed."
           echo "Historical data will be restored separately."
 
-      # 7. Run main cross-browser suite.
-      # Preserve the original test exit code.
+      # 7. Run cross-browser tests
       - name: Run cross-browser tests
         id: cross_browser
         shell: bash
@@ -96,15 +94,13 @@ jobs:
           HEADLESS: "true"
           WORKERS: "1"
 
-      # 8. Validate the custom healing audit.
-      # Do not run this if the cross-browser suite failed.
+      # 8. Validate the self-healing report
       - name: Validate self-healing audit
         id: healing_audit
         if: steps.cross_browser.outcome == 'success'
-        run: node scripts/validate-healing-report.cjs
+        run: npm run validate:report
 
-      # 9. Run isolated reliability regression suite.
-      # It remains independent of the main Playwright config.
+      # 9. Run reliability regression tests
       - name: Run self-healing reliability tests
         id: reliability
         if: steps.cross_browser.outcome == 'success' && steps.healing_audit.outcome == 'success'
@@ -114,8 +110,7 @@ jobs:
           TEST_ENV: demo
           HEADLESS: "true"
 
-      # 10. Restore previous historical analytics.
-      # A failed restoration must not silently corrupt history.
+      # 10. Restore previous historical analytics
       - name: Restore previous AutoHeal history
         id: restore_history
         if: always() && steps.prepare.outcome == 'success'
@@ -217,8 +212,7 @@ jobs:
             echo "Starting a new historical dataset."
           fi
 
-      # 11. Generate historical analytics only from the
-      # current workflow's valid execution summary.
+      # 11. Generate historical analytics
       - name: Generate AutoHeal Historical Analytics
         id: analytics
         if: always() && steps.prepare.outcome == 'success'
@@ -267,7 +261,7 @@ jobs:
 
           echo "Historical analytics generated successfully."
 
-      # 12. Publish a readable GitHub Actions summary.
+      # 12. Publish GitHub Actions execution summary
       - name: Publish CI execution summary
         if: always()
         shell: bash
@@ -279,7 +273,7 @@ jobs:
           HISTORY_RESTORED: ${{ steps.restore_history.outputs.restored }}
         run: |
           {
-            echo "## AutoHeal QA — CI Execution"
+            echo "## AutoHeal QA - CI Execution"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -327,7 +321,7 @@ jobs:
 
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 13. Upload test diagnostics even if tests fail.
+      # 13. Upload test diagnostics
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -341,7 +335,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # 14. Upload execution summary and historical analytics.
+      # 14. Upload historical analytics
       - name: Upload AutoHeal Analytics
         if: always()
         uses: actions/upload-artifact@v4

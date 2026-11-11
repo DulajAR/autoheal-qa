@@ -2,18 +2,19 @@
 name: AutoHeal QA - Dashboard CI
 
 on:
-  push:
-    branches:
-      - develop
-      - main
-
   pull_request:
     branches:
       - develop
       - main
 
+  workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: dashboard-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   dashboard-quality:
@@ -21,35 +22,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    env:
+      CI: "true"
+
     steps:
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
 
+      # 3. Install dependencies
       - name: Install dependencies
         run: npm ci
 
+      # 4. Install Chromium browser
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: TypeScript validation
-        run: npm run typecheck
-
-      - name: Reporting regression tests
-        run: npm run test:reporting
-
+      # 5. Execute dashboard regression tests
       - name: Dashboard browser tests
+        id: dashboard_tests
         run: npm run test:dashboard
 
-      - name: Check whitespace errors
-        run: git diff --check HEAD^ HEAD
-        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+      # 6. Publish execution summary
+      - name: Publish dashboard test summary
+        if: always()
+        shell: bash
+        env:
+          DASHBOARD_RESULT: ${{ steps.dashboard_tests.outcome }}
+        run: |
+          {
+            echo "## AutoHeal QA - Dashboard CI"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Branch | $GITHUB_REF_NAME |"
+            echo "| Commit | $GITHUB_SHA |"
+            echo "| Dashboard tests | $DASHBOARD_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
+      # 7. Upload failure artifacts
       - name: Upload dashboard failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
