@@ -120,6 +120,27 @@ function isNonNegativeFiniteNumber(
   );
 }
 
+/** Phase 4.7: strictly validate correlation metadata from attachments. */
+const RECOVERY_STAGES = [
+  "CONFIGURATION", "AUTHORIZATION", "DOM_EXTRACTION",
+  "PROVIDER", "VALIDATION", "RANKING", "COMPLETED",
+] as const;
+
+const RECOVERY_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isRecoveryDiagnostics(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.recoveryId === "string" &&
+    RECOVERY_ID_PATTERN.test(value.recoveryId) &&
+    typeof value.stage === "string" &&
+    RECOVERY_STAGES.some(stage => stage === value.stage) &&
+    isNonNegativeFiniteNumber(value.durationMs) &&
+    typeof value.timedOut === "boolean"
+  );
+}
+
 /**
  * Validate the Phase 4.3 analytics payload.
  *
@@ -237,21 +258,14 @@ class AutoHealReporter implements Reporter {
     );
   }
 
-  /**
-   * Validate legacy and Phase 4.3 AI audit events.
-   */
+  /** Validate legacy and Phase 4.7 AI audit events. */
   private isAIRecoveryAuditEvent(
     value: unknown
   ): value is AIRecoveryAuditEvent {
-    if (!isRecord(value)) {
-      return false;
-    }
+    if (!isRecord(value)) return false;
 
     const validStatuses = [
-      "SUGGESTED",
-      "NO_CANDIDATE",
-      "DISABLED",
-      "FAILED",
+      "SUGGESTED", "NO_CANDIDATE", "DISABLED", "FAILED",
     ];
 
     const baseValid =
@@ -262,42 +276,47 @@ class AutoHealReporter implements Reporter {
       typeof value.provider === "string" &&
       value.provider.length > 0 &&
       isNonNegativeInteger(value.evaluatedCandidates) &&
-      (
-        value.reason === undefined ||
-        typeof value.reason === "string"
-      ) &&
-      (
-        value.confidence === undefined ||
-        (
-          typeof value.confidence === "number" &&
-          Number.isFinite(value.confidence) &&
-          value.confidence >= 0 &&
-          value.confidence <= 1
-        )
-      );
+      (value.reason === undefined || typeof value.reason === "string") &&
+      (value.confidence === undefined || (
+        typeof value.confidence === "number" &&
+        Number.isFinite(value.confidence) &&
+        value.confidence >= 0 && value.confidence <= 1
+      ));
 
-    if (!baseValid) {
-      return false;
+    if (!baseValid) return false;
+
+    const hasRecoveryId = value.recoveryId !== undefined;
+    const hasDiagnostics = value.diagnostics !== undefined;
+    if (hasRecoveryId !== hasDiagnostics) return false;
+
+    if (hasDiagnostics) {
+      if (
+        typeof value.recoveryId !== "string" ||
+        !isRecoveryDiagnostics(value.diagnostics)
+      ) return false;
+
+      const diagnostics = value.diagnostics;
+      if (!isRecord(diagnostics)) return false;
+      if (diagnostics.recoveryId !== value.recoveryId) return false;
+      if (diagnostics.timedOut === true && value.status !== "FAILED") {
+        return false;
+      }
     }
 
-    if (value.analytics === undefined) {
-      return true;
-    }
-
-    if (!isDecisionAnalytics(value.analytics)) {
-      return false;
-    }
+    if (value.analytics === undefined) return true;
+    if (!isDecisionAnalytics(value.analytics)) return false;
 
     const analytics = value.analytics;
-
-    const totalDecisions =
-      analytics.acceptedCandidates +
-      analytics.rejectedCandidates +
-      analytics.notEvaluatedCandidates;
+    // Not-evaluated candidates must NOT count as evaluated.
+    const evaluatedDecisions =
+      analytics.acceptedCandidates + analytics.rejectedCandidates;
+    const trackedDecisions =
+      evaluatedDecisions + analytics.notEvaluatedCandidates;
 
     return (
-      Number.isSafeInteger(totalDecisions) &&
-      totalDecisions === value.evaluatedCandidates
+      Number.isSafeInteger(evaluatedDecisions) &&
+      evaluatedDecisions === value.evaluatedCandidates &&
+      Number.isSafeInteger(trackedDecisions)
     );
   }
 
@@ -397,6 +416,19 @@ class AutoHealReporter implements Reporter {
               analytics: sanitizeDecisionAnalytics(
                 parsed.analytics
               ),
+            }
+          : {}),
+
+        ...(parsed.diagnostics !== undefined &&
+        parsed.recoveryId !== undefined
+          ? {
+              recoveryId: parsed.recoveryId,
+              diagnostics: {
+                recoveryId: parsed.diagnostics.recoveryId,
+                stage: parsed.diagnostics.stage,
+                durationMs: parsed.diagnostics.durationMs,
+                timedOut: parsed.diagnostics.timedOut,
+              },
             }
           : {}),
       };

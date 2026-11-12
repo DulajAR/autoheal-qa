@@ -10,17 +10,12 @@ import type {
   AICandidateDecisionReason,
 } from "./AIRecoveryExplainabilityTypes";
 
+import type {
+  AIRecoveryDiagnostics,
+} from "./AIRecoveryDiagnostics";
+
 /**
- * Phase 4.3 — Privacy-safe AI recovery analytics.
- *
- * Stores aggregate decision metrics only.
- *
- * Never includes:
- * - Raw DOM content
- * - Original selectors
- * - Suggested selectors
- * - Recovered selectors
- * - Page source
+ * Privacy-safe candidate decision analytics.
  */
 export type AIRecoveryDecisionAnalytics = {
   acceptedCandidates: number;
@@ -34,40 +29,30 @@ export type AIRecoveryDecisionAnalytics = {
 };
 
 /**
- * AI recovery audit event.
- *
- * Maintains backward compatibility with
- * existing Phase 3.7 audit events.
- *
- * Phase 4.3 analytics are optional.
+ * Backward-compatible AI recovery audit event.
  */
 export type AIRecoveryAuditEvent = {
   event: "AI_RECOVERY_EVALUATED";
-
   timestamp: string;
-
   status: AIRecoveryResult["status"];
-
   provider: string;
-
   evaluatedCandidates: number;
-
   reason?: string;
-
   confidence?: number;
+  analytics?: AIRecoveryDecisionAnalytics;
 
   /**
-   * Phase 4.3 candidate decision analytics.
+   * Phase 4.7 correlation metadata.
    */
-  analytics?: AIRecoveryDecisionAnalytics;
+  recoveryId?: string;
+  diagnostics?: AIRecoveryDiagnostics;
 };
 
 /**
- * Convert Phase 4.2 recovery explanations into
- * privacy-safe Phase 4.3 analytics.
+ * Convert candidate decisions to aggregate analytics.
  *
- * Each rejection reason is counted only once
- * per rejected candidate.
+ * A rejection reason is counted once per
+ * rejected candidate.
  */
 function buildDecisionAnalytics(
   result: AIRecoveryResult
@@ -81,7 +66,7 @@ function buildDecisionAnalytics(
   const decisions = explanation.decisions;
 
   const notEvaluatedCandidates = decisions.filter(
-    decision =>
+    (decision) =>
       decision.decision === "NOT_EVALUATED"
   ).length;
 
@@ -94,10 +79,6 @@ function buildDecisionAnalytics(
       continue;
     }
 
-    /**
-     * Avoid counting duplicate reasons
-     * for the same candidate.
-     */
     const uniqueReasons = new Set(
       decision.reasons
     );
@@ -125,25 +106,16 @@ function buildDecisionAnalytics(
 }
 
 /**
- * Records advisory AI recovery evaluations.
- *
- * AI suggestions are not automatically executed.
- *
- * Logging remains compatible with the existing
- * Logger LogContext primitive value types.
+ * Record a privacy-safe advisory AI recovery event.
  */
 export class AIRecoveryAudit {
   static record(result: AIRecoveryResult): void {
-    /**
-     * Build structured analytics once.
-     */
     const analytics = buildDecisionAnalytics(
       result
     );
 
-    /**
-     * Create the AI recovery audit event.
-     */
+    const diagnostics = result.diagnostics;
+
     const auditEvent: AIRecoveryAuditEvent = {
       event: "AI_RECOVERY_EVALUATED",
 
@@ -157,32 +129,28 @@ export class AIRecoveryAudit {
         result.evaluatedCandidates,
 
       ...(result.reason !== undefined
-        ? {
-            reason: result.reason,
-          }
+        ? { reason: result.reason }
         : {}),
 
       ...(result.confidence !== undefined
-        ? {
-            confidence: result.confidence,
-          }
+        ? { confidence: result.confidence }
         : {}),
 
       ...(analytics !== undefined
+        ? { analytics }
+        : {}),
+
+      ...(diagnostics !== undefined
         ? {
-            analytics,
+            recoveryId: diagnostics.recoveryId,
+            diagnostics: { ...diagnostics },
           }
         : {}),
     };
 
     /**
-     * Log only primitive values.
-     *
-     * Logger.info() accepts:
-     * string | number | boolean | null
-     *
-     * Do not pass the nested analytics object
-     * directly into Logger.info().
+     * Logger accepts primitive context values only.
+     * Never log selectors, DOM content, or raw errors.
      */
     Logger.info("AI_RECOVERY_EVALUATED", {
       status: auditEvent.status,
@@ -193,21 +161,13 @@ export class AIRecoveryAudit {
         auditEvent.evaluatedCandidates,
 
       ...(auditEvent.reason !== undefined
-        ? {
-            reason: auditEvent.reason,
-          }
+        ? { reason: auditEvent.reason }
         : {}),
 
       ...(auditEvent.confidence !== undefined
-        ? {
-            confidence: auditEvent.confidence,
-          }
+        ? { confidence: auditEvent.confidence }
         : {}),
 
-      /**
-       * Flatten analytics into primitive values
-       * to preserve Logger compatibility.
-       */
       ...(analytics !== undefined
         ? {
             acceptedCandidates:
@@ -223,14 +183,22 @@ export class AIRecoveryAudit {
               analytics.validationDurationMs,
           }
         : {}),
+
+      ...(diagnostics !== undefined
+        ? {
+            recoveryId: diagnostics.recoveryId,
+            recoveryStage: diagnostics.stage,
+            recoveryDurationMs:
+              diagnostics.durationMs,
+            recoveryTimedOut:
+              diagnostics.timedOut,
+          }
+        : {}),
     });
 
     /**
-     * Attach the structured audit event
-     * to the active Playwright test.
-     *
-     * The reporter will process this attachment
-     * in the next implementation step.
+     * Keep the established reporter attachment
+     * name and JSON content type.
      */
     try {
       const testInfo = test.info();
@@ -246,10 +214,8 @@ export class AIRecoveryAudit {
         ),
       });
     } catch {
-      /**
-       * Allow audit logging outside
-       * an active Playwright test.
-       */
+      // Recovery audits can also run outside
+      // an active Playwright test.
     }
   }
 }

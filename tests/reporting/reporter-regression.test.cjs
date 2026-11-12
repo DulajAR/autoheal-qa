@@ -532,7 +532,7 @@ test("REP-010: aggregates AI decision analytics", () => {
         createTest("chromium", `analytics-${index}`),
         createResult([
           createAttachment("autoheal-ai-recovery-event", createAIEvent({
-            evaluatedCandidates: 3,
+            evaluatedCandidates: 2,
             analytics: createDecisionAnalytics(),
           })),
         ])
@@ -603,7 +603,7 @@ test("REP-014: excludes unexpected nested analytics fields", () => {
       createTest("chromium", "analytics-privacy"),
       createResult([
         createAttachment("autoheal-ai-recovery-event", createAIEvent({
-          evaluatedCandidates: 3,
+          evaluatedCandidates: 2,
           analytics: createDecisionAnalytics({
             suggestedSelector: "#private",
             rawDOM: "<secret>",

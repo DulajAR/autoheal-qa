@@ -44,6 +44,32 @@ try {
       rejectionReasons: reasons
     };
   }
+  // PHASE_4_7_STEP_3_OBSERVABILITY
+  const recoveryStages = [
+    'CONFIGURATION', 'AUTHORIZATION', 'DOM_EXTRACTION',
+    'PROVIDER', 'VALIDATION', 'RANKING', 'COMPLETED'
+  ];
+  const recoveryStageSet = new Set(recoveryStages);
+  const recoveryIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  function safeRecoveryMetadata(event) {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+    const diag = event.diagnostics;
+    if (!diag || typeof diag !== 'object' || Array.isArray(diag)) return null;
+    if (typeof event.recoveryId !== 'string' || !recoveryIdPattern.test(event.recoveryId)) return null;
+    if (diag.recoveryId !== event.recoveryId || !recoveryStageSet.has(diag.stage)) return null;
+    if (typeof diag.durationMs !== 'number' || !Number.isFinite(diag.durationMs) || diag.durationMs < 0) return null;
+    if (typeof diag.timedOut !== 'boolean') return null;
+    if (diag.timedOut && event.status !== 'FAILED') return null;
+    return {
+      recoveryId: event.recoveryId,
+      diagnostics: {
+        recoveryId: event.recoveryId,
+        stage: diag.stage,
+        durationMs: diag.durationMs,
+        timedOut: diag.timedOut
+      }
+    };
+  }
   const events = tests.flatMap(t => (Array.isArray(t.healingEvents) ? t.healingEvents : []).map(e => ({...e, project: t.project || 'unknown', test: t.title || ''})));
   const aiEvents = tests.flatMap(t =>
     (Array.isArray(t.aiRecoveryEvents) ? t.aiRecoveryEvents : []).map(e => ({
@@ -54,6 +80,7 @@ try {
       confidence: e.confidence ?? null,
       reason: e.reason ?? '',
       analytics: safeDecision(e.analytics),
+      ...safeRecoveryMetadata(e),
       project: String(t.project || 'unknown'),
       test: String(t.title || '')
     }))
@@ -96,6 +123,24 @@ try {
   }
   // Event data is the source of truth for this display, including historical reports.
   aiRecovery.decisionAnalytics = decisionTotals;
+  const observedRecoveries = aiEvents.filter(e => e.diagnostics !== undefined);
+  const recoveryObservability = {
+    eventsWithDiagnostics: observedRecoveries.length,
+    legacyEvents: aiEvents.length - observedRecoveries.length,
+    timedOut: observedRecoveries.filter(e => e.diagnostics.timedOut).length,
+    averageDurationMs: observedRecoveries.length
+      ? Number((observedRecoveries.reduce((sum, e) => sum + e.diagnostics.durationMs, 0) / observedRecoveries.length).toFixed(3))
+      : null,
+    maximumDurationMs: observedRecoveries.length
+      ? Math.max(...observedRecoveries.map(e => e.diagnostics.durationMs))
+      : null,
+    stages: Object.fromEntries(recoveryStages.map(stage => [stage,
+      observedRecoveries.filter(e => e.diagnostics.stage === stage).length]))
+  };
+  recoveryObservability.timeoutRatePercent = observedRecoveries.length
+    ? Number((100 * recoveryObservability.timedOut / observedRecoveries.length).toFixed(2))
+    : null;
+  aiRecovery.observability = recoveryObservability;
   const projects = [...new Set(tests.map(t => String(t.project || 'unknown')))];
   const browsers = projects.map(project => {
     const rows = tests.filter(t => String(t.project || 'unknown') === project);
@@ -127,7 +172,7 @@ try {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AutoHeal QA | Analytics</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#090e1a;color:#e7ecf8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,#19345c 0,transparent 37%),#090e1a}.shell{max-width:1250px;margin:auto;padding:40px 24px 80px}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7bb8ff;font-weight:700}h1{font-size:clamp(30px,5vw,48px);margin:10px 0}p{color:#a6b5d1;line-height:1.55}.header{display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:28px}.pill{border:1px solid #2b4662;background:#10243b;border-radius:999px;padding:9px 16px;color:#a7e6ca;font-weight:700}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card,.panel{background:#111a2b;border:1px solid #25334a;border-radius:18px;padding:22px;box-shadow:0 14px 32px #0002}.card small{display:block;color:#91a5c6;font-size:13px}.number{font-size:34px;font-weight:800;margin:12px 0 3px}.green{color:#63e0aa}.blue{color:#79b6ff}.panel{margin-top:18px}h2{font-size:19px;margin:0 0 18px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bars{display:grid;gap:15px}.barrow{display:grid;grid-template-columns:minmax(100px,1fr) 2fr 75px;gap:12px;align-items:center;font-size:13px}.barrow span{overflow-wrap:anywhere}.track{height:11px;background:#25344b;border-radius:20px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,#478de8,#6de1c3);border-radius:20px}.muted{color:#90a2bf}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:650px;text-align:left}th,td{padding:13px 11px;border-bottom:1px solid #263449;font-size:13px}th{color:#8ea8ca;font-weight:600}td{color:#d6e1f5}code{font-size:12px;color:#a9d5ff;overflow-wrap:anywhere}.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}select,input{background:#0b1424;color:#e8f0ff;border:1px solid #33425c;border-radius:10px;padding:10px 12px;max-width:100%}input{min-width:230px;flex:1}.empty{color:#9caecb;padding:12px 0}.foot{margin-top:20px;font-size:12px;color:#8296b5}.sectiontitle{margin-top:32px;color:#a8c9ff;font-size:13px;letter-spacing:.14em;text-transform:uppercase}.hint{font-size:12px}.smallgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mini{border:1px solid #293d58;border-radius:12px;padding:14px}.mini strong{display:block;font-size:24px;margin-top:8px}.ai-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.ai-metrics .card{padding:18px}.ai-note{border-left:3px solid #79b6ff;padding-left:12px}.decision-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.decision-grid .card{padding:18px}@media(max-width:800px){.ai-metrics,.decision-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:520px){.ai-metrics,.decision-grid,.metrics,.smallgrid{grid-template-columns:1fr}.shell{padding:24px 14px}.barrow{grid-template-columns:90px 1fr 60px}}
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#090e1a;color:#e7ecf8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,#19345c 0,transparent 37%),#090e1a}.shell{max-width:1250px;margin:auto;padding:40px 24px 80px}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7bb8ff;font-weight:700}h1{font-size:clamp(30px,5vw,48px);margin:10px 0}p{color:#a6b5d1;line-height:1.55}.header{display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:28px}.pill{border:1px solid #2b4662;background:#10243b;border-radius:999px;padding:9px 16px;color:#a7e6ca;font-weight:700}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card,.panel{background:#111a2b;border:1px solid #25334a;border-radius:18px;padding:22px;box-shadow:0 14px 32px #0002}.card small{display:block;color:#91a5c6;font-size:13px}.number{font-size:34px;font-weight:800;margin:12px 0 3px}.green{color:#63e0aa}.blue{color:#79b6ff}.panel{margin-top:18px}h2{font-size:19px;margin:0 0 18px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bars{display:grid;gap:15px}.barrow{display:grid;grid-template-columns:minmax(100px,1fr) 2fr 75px;gap:12px;align-items:center;font-size:13px}.barrow span{overflow-wrap:anywhere}.track{height:11px;background:#25344b;border-radius:20px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,#478de8,#6de1c3);border-radius:20px}.muted{color:#90a2bf}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:650px;text-align:left}th,td{padding:13px 11px;border-bottom:1px solid #263449;font-size:13px}th{color:#8ea8ca;font-weight:600}td{color:#d6e1f5}code{font-size:12px;color:#a9d5ff;overflow-wrap:anywhere}.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}select,input{background:#0b1424;color:#e8f0ff;border:1px solid #33425c;border-radius:10px;padding:10px 12px;max-width:100%}input{min-width:230px;flex:1}.empty{color:#9caecb;padding:12px 0}.foot{margin-top:20px;font-size:12px;color:#8296b5}.sectiontitle{margin-top:32px;color:#a8c9ff;font-size:13px;letter-spacing:.14em;text-transform:uppercase}.hint{font-size:12px}.smallgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mini{border:1px solid #293d58;border-radius:12px;padding:14px}.mini strong{display:block;font-size:24px;margin-top:8px}.ai-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.ai-metrics .card{padding:18px}.ai-note{border-left:3px solid #79b6ff;padding-left:12px}.decision-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.decision-grid .card{padding:18px}.recovery-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.observability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.observability-grid .card{padding:18px}@media(max-width:800px){.observability-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.observability-grid{grid-template-columns:1fr}}@media(max-width:800px){.ai-metrics,.decision-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:520px){.ai-metrics,.decision-grid,.metrics,.smallgrid{grid-template-columns:1fr}.shell{padding:24px 14px}.barrow{grid-template-columns:90px 1fr 60px}}
 </style></head><body><main class="shell"><header class="header"><div><div class="eyebrow">Quality Engineering / Analytics</div><h1>AutoHeal QA <span class="blue">Insights</span></h1><p id="period">Playwright test execution and self-healing intelligence</p></div><span class="pill" id="overall">Report loaded</span></header>
 <section class="metrics"><div class="card"><small>Total test attempts</small><div class="number" id="total">—</div><small>Across configured projects</small></div><div class="card"><small>Passed attempts</small><div class="number green" id="passed">—</div><small id="passrate">Pass rate</small></div><div class="card"><small>Healing events</small><div class="number blue" id="heal">—</div><small id="healedattempts">Recovered attempts</small></div><div class="card"><small>Average selector confidence</small><div class="number" id="confidence">—</div><small>Configured recovery confidence, not success probability</small></div></section>
 <section class="layout"><div class="panel"><h2>Browser execution — latest run</h2><div id="browserBars" class="bars"></div></div><div class="panel"><h2>Healing by browser — latest run</h2><div id="healingBars" class="bars"></div></div></section>
@@ -149,6 +194,16 @@ try {
  <div class="card"><small>Average validation time</small><div class="number" id="decisionDuration">—</div><small id="decisionCoverage">Events with analytics</small></div>
  </section>
  <section class="layout"><div class="panel"><h2>Candidate decision breakdown</h2><div id="decisionBars" class="bars"></div></div><div class="panel"><h2>AI rejection reasons</h2><div id="rejectionBars" class="bars"></div><p class="hint">A rejected candidate may have multiple reasons.</p></div></section>
+ <div class="sectiontitle">AI recovery observability — latest run</div>
+ <p class="hint" id="recoveryCoverage">Recovery diagnostics coverage</p>
+ <section class="observability-grid">
+ <div class="card"><small>Recoveries with diagnostics</small><div class="number blue" id="recoveryObserved">—</div><small>Correlated events</small></div>
+ <div class="card"><small>Timed-out recoveries</small><div class="number" id="recoveryTimeouts">—</div><small id="recoveryTimeoutRate">Timeout rate</small></div>
+ <div class="card"><small>Average recovery duration</small><div class="number" id="recoveryAverage">—</div><small>Observed events only</small></div>
+ <div class="card"><small>Maximum recovery duration</small><div class="number" id="recoveryMaximum">—</div><small>Observed events only</small></div>
+ </section>
+ <section class="panel"><h2>Recovery stage distribution</h2><div class="bars" id="recoveryStageBars"></div></section>
+ <section class="panel"><h2>Recovery diagnostics history</h2><div class="filters"><select id="recoveryStageFilter" aria-label="Filter recovery diagnostics by stage"><option value="">All stages</option></select><select id="recoveryTimeoutFilter" aria-label="Filter recovery diagnostics by timeout"><option value="">All outcomes</option><option value="true">Timed out</option><option value="false">Not timed out</option></select><input id="recoverySearch" aria-label="Search recovery diagnostics" placeholder="Search recovery ID, test or provider…"></div><div class="tablewrap"><table><thead><tr><th>Recovery ID</th><th>Test</th><th>Browser</th><th>Provider</th><th>Status</th><th>Stage</th><th>Duration</th><th>Timed out</th></tr></thead><tbody id="recoveryHistoryBody"></tbody></table></div><p class="empty" id="recoveryHistoryEmpty" hidden>No matching recovery diagnostics.</p></section>
  <section class="panel"><h2>AI recovery audit events</h2><div class="filters"><select id="aiBrowserFilter" aria-label="Filter AI recovery events by browser"><option value="">All browsers</option></select><select id="aiStatusFilter" aria-label="Filter AI recovery events by status"><option value="">All statuses</option><option value="SUGGESTED">Suggested</option><option value="NO_CANDIDATE">No candidate</option><option value="DISABLED">Disabled</option><option value="FAILED">Failed</option></select><input id="aiSearch" aria-label="Search AI recovery events" placeholder="Search test, provider or reason…"></div><div class="tablewrap"><table><thead><tr><th>Time</th><th>Browser</th><th>Test</th><th>Status</th><th>Provider</th><th>Candidates</th><th>Confidence</th><th>Reason</th><th>Decisions (A/R/N)</th><th>Validation</th></tr></thead><tbody id="aiEventsBody"></tbody></table></div><p id="aiEventEmpty" class="empty" hidden>No matching AI recovery events.</p></section>
 <div class="sectiontitle">Historical reliability</div><div class="panel"><h2>Across saved executions</h2><div id="historySummary" class="smallgrid"></div><p class="hint" id="historyHint"></p></div>
 <section class="layout"><div class="panel"><h2>Pass rate by run</h2><div id="passTrend" class="bars"></div></div><div class="panel"><h2>Healing events by run</h2><div id="healingTrend" class="bars"></div></div></section>
@@ -246,6 +301,29 @@ if (hasDecisionAnalytics) {
   empty(el('rejectionBars'), 'No rejection reasons recorded.');
 }
 
+const obs=ai.observability;
+el('recoveryObserved').textContent=obs.eventsWithDiagnostics;
+el('recoveryTimeouts').textContent=obs.timedOut;
+el('recoveryTimeoutRate').textContent='Timeout rate: '+(obs.timeoutRatePercent==null?'—':pct(obs.timeoutRatePercent));
+el('recoveryAverage').textContent=obs.averageDurationMs==null?'—':obs.averageDurationMs.toFixed(3)+' ms';
+el('recoveryMaximum').textContent=obs.maximumDurationMs==null?'—':obs.maximumDurationMs.toFixed(3)+' ms';
+el('recoveryCoverage').textContent=obs.eventsWithDiagnostics+' of '+d.aiEvents.length+' AI events have valid recovery diagnostics; '+obs.legacyEvents+' legacy or uncorrelated events.';
+const stageEntries=Object.entries(obs.stages);
+for(const [stage,count] of stageEntries){
+  const option=document.createElement('option');option.value=stage;option.textContent=stage;el('recoveryStageFilter').append(option);
+  bar(el('recoveryStageBars'),stage,count,Math.max(1,...stageEntries.map(x=>x[1])),count);
+}
+function renderRecoveryHistory(){
+  const stage=el('recoveryStageFilter').value;
+  const timeout=el('recoveryTimeoutFilter').value;
+  const q=el('recoverySearch').value.trim().toLowerCase();
+  const root=el('recoveryHistoryBody');root.replaceChildren();
+  const rows=d.aiEvents.filter(e=>e.diagnostics&&(!stage||e.diagnostics.stage===stage)&&(!timeout||String(e.diagnostics.timedOut)===timeout)&&[e.recoveryId,e.test,e.provider,e.project,e.status].join(' ').toLowerCase().includes(q));
+  for(const e of rows){const row=document.createElement('tr');cell(row,e.recoveryId,true);cell(row,e.test);cell(row,e.project);cell(row,e.provider);cell(row,e.status);cell(row,e.diagnostics.stage);cell(row,e.diagnostics.durationMs.toFixed(3)+' ms');cell(row,e.diagnostics.timedOut?'Yes':'No');root.append(row);}
+  el('recoveryHistoryEmpty').hidden=rows.length>0;
+}
+for(const id of ['recoveryStageFilter','recoveryTimeoutFilter','recoverySearch'])el(id).addEventListener('input',renderRecoveryHistory);
+renderRecoveryHistory();
 function renderAIEvents(){
   const browser=el('aiBrowserFilter').value;
   const status=el('aiStatusFilter').value;

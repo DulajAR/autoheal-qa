@@ -24,6 +24,15 @@ import {
   isAuthorizedProductionProvider,
 } from "./AIProviderFactory";
 
+import {
+  createRecoveryId,
+  createRecoveryDiagnostics,
+} from "./AIRecoveryDiagnostics";
+
+import type {
+  AIRecoveryStage,
+} from "./AIRecoveryDiagnostics";
+
 import type {
   AIRecoveryOptions,
   AIRecoveryResult,
@@ -32,20 +41,10 @@ import type {
 /**
  * AutoHeal QA - AI Recovery Orchestrator
  *
- * Phase 4.6 - Step 3
+ * Phase 4.7 - Structured Recovery Diagnostics
  *
- * Responsibilities:
- * - Enforce provider authorization.
- * - Extract controlled DOM context.
- * - Request advisory AI locator candidates.
- * - Enforce provider timeout independently.
- * - Validate candidates within an overall deadline.
- * - Distinguish candidate and recovery timeouts.
- * - Preserve structured decision explanations.
- * - Prevent late results from producing suggestions.
- *
- * AI suggestions are advisory only.
- * This class never executes recovered locators.
+ * AI suggestions remain advisory only.
+ * No AI-generated locator is executed here.
  */
 export class AIRecoveryOrchestrator {
   private readonly extractor: DOMContextExtractor;
@@ -70,23 +69,23 @@ export class AIRecoveryOrchestrator {
     primarySelector: string,
     options: AIRecoveryOptions = {}
   ): Promise<AIRecoveryResult> {
-    const enabled = options.enabled ?? false;
+    const recoveryId = createRecoveryId();
+    const recoveryStartedAt = performance.now();
 
+    let currentStage: AIRecoveryStage =
+      "CONFIGURATION";
+
+    const enabled = options.enabled ?? false;
     const minimumConfidence =
       options.minimumConfidence ?? 0.85;
-
     const providerTimeoutMs =
       options.providerTimeoutMs ?? 3000;
-
     const maxCandidates =
       options.maxCandidates ?? 5;
-
     const validationTimeoutMs =
       options.validationTimeoutMs ?? 3000;
 
-    // -----------------------------------------------
-    // 1. Validate configuration
-    // -----------------------------------------------
+    // Preserve existing configuration validation.
 
     if (
       !Number.isFinite(minimumConfidence) ||
@@ -127,10 +126,6 @@ export class AIRecoveryOrchestrator {
         "validationTimeoutMs must be an integer between 1 and 10000"
       );
     }
-
-    // -----------------------------------------------
-    // 2. Recovery state and explainability
-    // -----------------------------------------------
 
     const providerName =
       this.provider?.name ?? "disabled";
@@ -175,7 +170,8 @@ export class AIRecoveryOrchestrator {
 
     const createResult = (
       status: AIRecoveryResult["status"],
-      reason?: string
+      reason?: string,
+      timedOut = false
     ): AIRecoveryResult => ({
       status,
       provider: providerName,
@@ -183,11 +179,15 @@ export class AIRecoveryOrchestrator {
       evaluatedCandidates,
       ...(reason ? { reason } : {}),
       explanation: buildExplanation(),
+      diagnostics: createRecoveryDiagnostics(
+        recoveryId,
+        currentStage,
+        recoveryStartedAt,
+        timedOut
+      ),
     });
 
-    // -----------------------------------------------
-    // 3. Feature and provider authorization
-    // -----------------------------------------------
+    currentStage = "AUTHORIZATION";
 
     if (!enabled || !this.provider) {
       return createResult("DISABLED");
@@ -205,9 +205,7 @@ export class AIRecoveryOrchestrator {
     }
 
     try {
-      // ---------------------------------------------
-      // 4. Extract controlled DOM context
-      // ---------------------------------------------
+      currentStage = "DOM_EXTRACTION";
 
       const context = await this.extractor.extract({
         maxElements: 100,
@@ -219,9 +217,7 @@ export class AIRecoveryOrchestrator {
         context
       );
 
-      // ---------------------------------------------
-      // 5. Provider timeout protection
-      // ---------------------------------------------
+      currentStage = "PROVIDER";
 
       let providerTimer:
         | ReturnType<typeof setTimeout>
@@ -235,10 +231,9 @@ export class AIRecoveryOrchestrator {
 
           new Promise<never>((_, reject) => {
             providerTimer = setTimeout(
-              () =>
-                reject(
-                  new Error("PROVIDER_TIMEOUT")
-                ),
+              () => reject(
+                new Error("PROVIDER_TIMEOUT")
+              ),
               providerTimeoutMs
             );
           }),
@@ -263,10 +258,6 @@ export class AIRecoveryOrchestrator {
         );
       }
 
-      // ---------------------------------------------
-      // 6. Sort candidates by confidence
-      // ---------------------------------------------
-
       const sortedCandidates = candidates
         .slice(0, maxCandidates)
         .sort((a, b) => {
@@ -290,9 +281,7 @@ export class AIRecoveryOrchestrator {
 
       const validatedDecisionIndices: number[] = [];
 
-      // ---------------------------------------------
-      // 7. Shared recovery validation deadline
-      // ---------------------------------------------
+      currentStage = "VALIDATION";
 
       validationStartedAt = performance.now();
 
@@ -305,10 +294,6 @@ export class AIRecoveryOrchestrator {
       const hasExpired = (): boolean =>
         remainingBudget() <= 0;
 
-      /**
-       * Record candidates that were not evaluated
-       * because the overall budget expired.
-       */
       const markNotEvaluated = (
         fromIndex: number
       ): void => {
@@ -325,9 +310,6 @@ export class AIRecoveryOrchestrator {
         }
       };
 
-      /**
-       * Produce a fail-closed recovery timeout result.
-       */
       const recoveryTimedOut = (
         nextCandidateIndex: number
       ): AIRecoveryResult => {
@@ -335,13 +317,10 @@ export class AIRecoveryOrchestrator {
 
         return createResult(
           "FAILED",
-          "VALIDATION_TIMEOUT"
+          "VALIDATION_TIMEOUT",
+          true
         );
       };
-
-      // ---------------------------------------------
-      // 8. Candidate validation loop
-      // ---------------------------------------------
 
       for (
         const [candidateIndex, candidate]
@@ -356,10 +335,6 @@ export class AIRecoveryOrchestrator {
         evaluatedCandidates++;
 
         const startedAt = performance.now();
-
-        // -------------------------------------------
-        // 8.1 Malformed candidate handling
-        // -------------------------------------------
 
         if (
           !candidate ||
@@ -383,10 +358,6 @@ export class AIRecoveryOrchestrator {
           continue;
         }
 
-        // -------------------------------------------
-        // 8.2 Independent recovery timeout guard
-        // -------------------------------------------
-
         let validationTimer:
           | ReturnType<typeof setTimeout>
           | undefined;
@@ -396,13 +367,6 @@ export class AIRecoveryOrchestrator {
         );
 
         try {
-          /**
-           * The validator receives its own bounded
-           * candidate-level timeout.
-           *
-           * The outer race protects the entire
-           * remaining recovery validation budget.
-           */
           const candidateTimeoutMs = Math.max(
             1,
             Math.min(
@@ -436,10 +400,6 @@ export class AIRecoveryOrchestrator {
           const validationDurationMs =
             performance.now() - startedAt;
 
-          // -----------------------------------------
-          // 8.3 Overall recovery timeout
-          // -----------------------------------------
-
           if (
             validation === timeoutMarker ||
             hasExpired()
@@ -456,10 +416,6 @@ export class AIRecoveryOrchestrator {
             );
           }
 
-          // -----------------------------------------
-          // 8.4 Candidate rejection
-          // -----------------------------------------
-
           if (!validation.valid) {
             decisions.push({
               candidateIndex,
@@ -470,19 +426,8 @@ export class AIRecoveryOrchestrator {
               validationDurationMs,
             });
 
-            /**
-             * A candidate-level timeout does not
-             * automatically exhaust the overall
-             * recovery budget.
-             *
-             * Continue only if time remains.
-             */
             continue;
           }
-
-          // -----------------------------------------
-          // 8.5 Candidate acceptance
-          // -----------------------------------------
 
           decisions.push({
             candidateIndex,
@@ -508,20 +453,15 @@ export class AIRecoveryOrchestrator {
         }
       }
 
-      // ---------------------------------------------
-      // 9. Prevent ranking after deadline
-      // ---------------------------------------------
-
       if (hasExpired()) {
         return createResult(
           "FAILED",
-          "VALIDATION_TIMEOUT"
+          "VALIDATION_TIMEOUT",
+          true
         );
       }
 
-      // ---------------------------------------------
-      // 10. Rank validated candidates
-      // ---------------------------------------------
+      currentStage = "RANKING";
 
       const ranked = this.ranker.rank(
         validatedInputs,
@@ -538,8 +478,7 @@ export class AIRecoveryOrchestrator {
             candidate.inputIndex
           ];
 
-        const decision =
-          decisions[decisionIndex];
+        const decision = decisions[decisionIndex];
 
         if (!decision) {
           continue;
@@ -553,14 +492,11 @@ export class AIRecoveryOrchestrator {
         }
       }
 
-      // ---------------------------------------------
-      // 11. Final deadline verification
-      // ---------------------------------------------
-
       if (hasExpired()) {
         return createResult(
           "FAILED",
-          "VALIDATION_TIMEOUT"
+          "VALIDATION_TIMEOUT",
+          true
         );
       }
 
@@ -569,22 +505,23 @@ export class AIRecoveryOrchestrator {
       );
 
       if (!best) {
+        currentStage = "COMPLETED";
+
         return createResult(
           "NO_CANDIDATE",
           "NO_VALID_CANDIDATE"
         );
       }
 
-      // ---------------------------------------------
-      // 12. Advisory suggestion only
-      // ---------------------------------------------
-
       if (hasExpired()) {
         return createResult(
           "FAILED",
-          "VALIDATION_TIMEOUT"
+          "VALIDATION_TIMEOUT",
+          true
         );
       }
+
+      currentStage = "COMPLETED";
 
       return {
         status: "SUGGESTED",
@@ -594,13 +531,18 @@ export class AIRecoveryOrchestrator {
         confidence: best.confidence,
         evaluatedCandidates,
         explanation: buildExplanation(),
+        diagnostics: createRecoveryDiagnostics(
+          recoveryId,
+          currentStage,
+          recoveryStartedAt
+        ),
       };
-    } catch {
-      // Preserve existing generic pipeline failure
-      // behavior without exposing provider errors.
+    } catch (error: unknown) {
       return createResult(
         "FAILED",
-        "RECOVERY_PIPELINE_FAILED"
+        "RECOVERY_PIPELINE_FAILED",
+        error instanceof Error &&
+          error.message === "PROVIDER_TIMEOUT"
       );
     }
   }
