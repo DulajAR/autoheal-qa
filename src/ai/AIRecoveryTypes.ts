@@ -3,6 +3,10 @@ import type {
   AIRecoveryExplanation,
 } from "./AIRecoveryExplainabilityTypes";
 
+import type {
+  AIRecoveryDiagnostics,
+} from "./AIRecoveryDiagnostics";
+
 export type AIRecoveryStatus =
   | "SUGGESTED"
   | "NO_CANDIDATE"
@@ -25,12 +29,20 @@ export type AIRecoveryResult = {
   reason?: string;
 
   /**
-   * Structured recovery diagnostics.
+   * Structured candidate-level explanation.
    *
    * Does not expose raw candidate selectors
    * or DOM content.
    */
   explanation?: AIRecoveryExplanation;
+
+  /**
+   * Phase 4.7 recovery correlation metadata.
+   *
+   * Optional for compatibility with older
+   * recovery results and audit consumers.
+   */
+  diagnostics?: AIRecoveryDiagnostics;
 };
 
 export type AIRecoveryOptions = {
