@@ -18,6 +18,10 @@ import type {
   AICandidateDecisionReason,
 } from "../ai/AIRecoveryExplainabilityTypes";
 
+import {
+  validateRecoveryLifecycle,
+} from "../ai/AIRecoveryLifecycleIntegrity";
+
 export type HealingAuditEvent = {
   event: "LOCATOR_HEALED";
   timestamp: string;
@@ -373,6 +377,10 @@ class AutoHealReporter implements Reporter {
 
   /**
    * Extract validated, sanitized AI recovery events.
+   *
+   * Phase 4.8: reject duplicate recovery IDs within one
+   * test attempt, without affecting legacy events or
+   * the existing summary schema.
    */
   private extractAIRecoveryEvents(
     result: TestResult
@@ -392,10 +400,10 @@ class AutoHealReporter implements Reporter {
         console.warn(
           "[AutoHeal QA] Invalid AI recovery audit event structure"
         );
-
         continue;
       }
 
+      // Explicit allowlist: never spread untrusted attachments.
       const sanitized: AIRecoveryAuditEvent = {
         event: parsed.event,
         timestamp: parsed.timestamp,
@@ -432,6 +440,27 @@ class AutoHealReporter implements Reporter {
             }
           : {}),
       };
+
+      // This collection belongs to a single test attempt.
+      // Compare only with previously accepted events.
+      const integrity = validateRecoveryLifecycle([
+        ...events,
+        sanitized,
+      ]);
+
+      if (!integrity.valid) {
+        const candidateIndex = events.length;
+        const issueCodes = integrity.issues
+          .filter(issue => issue.eventIndex === candidateIndex)
+          .map(issue => issue.code)
+          .join(",");
+
+        console.warn(
+          "[AutoHeal QA] AI recovery lifecycle integrity rejected event: " +
+          (issueCodes || "INVALID_LIFECYCLE")
+        );
+        continue;
+      }
 
       events.push(sanitized);
     }
