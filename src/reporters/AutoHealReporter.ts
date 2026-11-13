@@ -325,7 +325,16 @@ class AutoHealReporter implements Reporter {
   }
 
   /**
-   * Read an attachment from memory or disk.
+   * Maximum accepted audit attachment size (1 MiB).
+   * Applies to both in-memory and on-disk attachments.
+   * Never log attachment content or file paths.
+   */
+  private static readonly MAX_AUDIT_ATTACHMENT_BYTES = 1024 * 1024;
+
+  /**
+   * Read an attachment from memory or disk, with a size bound.
+   * Invalid or unreadable attachments are rejected without
+   * changing the outcome of the Playwright test attempt.
    */
   private readAttachment(
     attachment: TestResult["attachments"][number]
@@ -333,20 +342,56 @@ class AutoHealReporter implements Reporter {
     try {
       let raw: string;
 
-      if (attachment.body) {
+      if (attachment.body !== undefined) {
+        if (
+          attachment.body.byteLength >
+          AutoHealReporter.MAX_AUDIT_ATTACHMENT_BYTES
+        ) {
+          console.warn("[AutoHeal QA] Audit attachment exceeds size limit");
+          return null;
+        }
+
         raw = attachment.body.toString("utf8");
       } else if (attachment.path) {
-        raw = fs.readFileSync(attachment.path, "utf8");
+        const stats = fs.statSync(attachment.path);
+        if (
+          !stats.isFile() ||
+          stats.size > AutoHealReporter.MAX_AUDIT_ATTACHMENT_BYTES
+        ) {
+          console.warn("[AutoHeal QA] Audit attachment exceeds size limit or is not a file");
+          return null;
+        }
+
+        // Read at most MAX + 1 bytes, even if the file grows
+        // after statSync. The extra byte detects overflow.
+        const fd = fs.openSync(attachment.path, "r");
+        try {
+          const maxBytes = AutoHealReporter.MAX_AUDIT_ATTACHMENT_BYTES;
+          const buffer = Buffer.allocUnsafe(maxBytes + 1);
+          let bytesRead = 0;
+          while (bytesRead < buffer.length) {
+            const count = fs.readSync(
+              fd, buffer, bytesRead,
+              buffer.length - bytesRead, null
+            );
+            if (count === 0) break;
+            bytesRead += count;
+          }
+          if (bytesRead > maxBytes) {
+            console.warn("[AutoHeal QA] Audit attachment exceeds size limit");
+            return null;
+          }
+          raw = buffer.toString("utf8", 0, bytesRead);
+        } finally {
+          fs.closeSync(fd);
+        }
       } else {
         return null;
       }
 
       return JSON.parse(raw) as unknown;
     } catch {
-      console.warn(
-        "[AutoHeal QA] Failed to parse audit attachment"
-      );
-
+      console.warn("[AutoHeal QA] Failed to parse audit attachment");
       return null;
     }
   }
