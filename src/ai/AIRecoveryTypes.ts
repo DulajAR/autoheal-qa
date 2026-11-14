@@ -7,6 +7,16 @@ import type {
   AIRecoveryDiagnostics,
 } from "./AIRecoveryDiagnostics";
 
+/**
+ * AutoHeal QA - AI Recovery Types
+ *
+ * Phase 4.8 - Recovery Isolation &
+ * Cancellation Hardening
+ *
+ * AI-generated locator suggestions remain
+ * advisory-only.
+ */
+
 export type AIRecoveryStatus =
   | "SUGGESTED"
   | "NO_CANDIDATE"
@@ -46,17 +56,62 @@ export type AIRecoveryResult = {
 };
 
 export type AIRecoveryOptions = {
+  /**
+   * Enable or disable AI recovery.
+   *
+   * Default: false
+   */
   enabled?: boolean;
 
+  /**
+   * Minimum confidence required for
+   * an AI-generated locator suggestion.
+   *
+   * Default: 0.85
+   */
   minimumConfidence?: number;
 
+  /**
+   * Maximum provider execution time
+   * in milliseconds.
+   *
+   * Default: 3000
+   */
   providerTimeoutMs?: number;
 
+  /**
+   * Maximum number of AI candidates
+   * considered during recovery.
+   *
+   * Default: 5
+   */
   maxCandidates?: number;
 
   /**
    * Overall wall-clock validation budget.
    * Independent of providerTimeoutMs.
+   *
+   * Default: 3000
    */
   validationTimeoutMs?: number;
+
+  /**
+   * Phase 4.8 - External cancellation support.
+   *
+   * Allows the caller to request cancellation
+   * using an AbortController.
+   *
+   * Optional to preserve backward compatibility.
+   *
+   * Cancellation is handled by
+   * AIRecoveryOrchestrator.
+   *
+   * Expected cancellation outcome:
+   * status: "FAILED"
+   * reason: "RECOVERY_CANCELLED"
+   *
+   * AI-generated locators remain advisory-only.
+   * They must never be automatically executed.
+   */
+  signal?: AbortSignal;
 };
