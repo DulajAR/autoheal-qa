@@ -1,4 +1,3 @@
-
 import type { Page } from "@playwright/test";
 
 import type {
@@ -242,6 +241,8 @@ export class AIRecoveryOrchestrator {
       );
     }
 
+    let providerTimedOut = false;
+
     try {
       currentStage = "DOM_EXTRACTION";
 
@@ -263,24 +264,33 @@ export class AIRecoveryOrchestrator {
 
       currentStage = "PROVIDER";
 
-      let providerTimer:
-        | ReturnType<typeof setTimeout>
-        | undefined;
-
+      const providerController = new AbortController();
+      let providerTimer: ReturnType<typeof setTimeout> | undefined;
       let candidates: AILocatorCandidate[];
 
-      try {
-        candidates = await raceCancellation(Promise.race([
-          this.provider.suggestLocators(request),
+      const abortProvider = (): void => {
+        providerController.abort();
+      };
 
-          new Promise<never>((_, reject) => {
-            providerTimer = setTimeout(
-              () => reject(
-                new Error("PROVIDER_TIMEOUT")
-              ),
-              providerTimeoutMs
-            );
-          }),
+      if (signal) {
+        signal.addEventListener("abort", abortProvider, { once: true });
+        if (signal.aborted) abortProvider();
+      }
+
+      try {
+        // Start the timeout before invoking the provider. Record timeout
+        // independently of the provider's abort-related rejection.
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          providerTimer = setTimeout(() => {
+            providerTimedOut = true;
+            reject(new Error("PROVIDER_TIMEOUT"));
+            abortProvider();
+          }, providerTimeoutMs);
+        });
+
+        candidates = await raceCancellation(Promise.race([
+          this.provider.suggestLocators(request, providerController.signal),
+          timeoutPromise,
         ]));
 
         if (cancelled()) {
@@ -290,6 +300,7 @@ export class AIRecoveryOrchestrator {
         if (providerTimer !== undefined) {
           clearTimeout(providerTimer);
         }
+        signal?.removeEventListener("abort", abortProvider);
       }
 
       if (!Array.isArray(candidates)) {
@@ -609,8 +620,9 @@ export class AIRecoveryOrchestrator {
       return createResult(
         "FAILED",
         "RECOVERY_PIPELINE_FAILED",
-        error instanceof Error &&
-          error.message === "PROVIDER_TIMEOUT"
+        providerTimedOut ||
+          (error instanceof Error &&
+            error.message === "PROVIDER_TIMEOUT")
       );
     }
   }

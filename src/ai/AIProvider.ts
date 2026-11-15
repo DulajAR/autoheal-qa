@@ -13,6 +13,7 @@ export interface AIProvider {
   readonly name: string;
 
   suggestLocators(
-    request: AILocatorRequest
+    request: AILocatorRequest,
+    signal?: AbortSignal
   ): Promise<AILocatorCandidate[]>;
 }
