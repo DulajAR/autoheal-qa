@@ -181,7 +181,8 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async suggestLocators(
-    request: AILocatorRequest
+    request: AILocatorRequest,
+    externalSignal?: AbortSignal
   ): Promise<AILocatorCandidate[]> {
     const startedAt = performance.now();
 
@@ -456,6 +457,8 @@ export class OpenAIProvider implements AIProvider {
           timeoutMs: this.config.timeoutMs,
 
           policy: this.options.retryPolicy,
+
+          signal: externalSignal,
 
           /**
            * Capture sanitized retry

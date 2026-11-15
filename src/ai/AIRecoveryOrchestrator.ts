@@ -1,4 +1,3 @@
-
 import type { Page } from "@playwright/test";
 
 import type {
@@ -71,6 +70,40 @@ export class AIRecoveryOrchestrator {
   ): Promise<AIRecoveryResult> {
     const recoveryId = createRecoveryId();
     const recoveryStartedAt = performance.now();
+    const signal = options.signal;
+
+    const cancelled = () => signal?.aborted === true;
+
+    const raceCancellation = async <T>(
+      work: Promise<T>
+    ): Promise<T> => {
+      if (!signal) return work;
+
+      if (signal.aborted) {
+        throw new Error("RECOVERY_CANCELLED");
+      }
+
+      let onAbort: (() => void) | undefined;
+
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () =>
+          reject(new Error("RECOVERY_CANCELLED"));
+
+        signal.addEventListener("abort", onAbort, {
+          once: true,
+        });
+
+        if (signal.aborted) onAbort();
+      });
+
+      try {
+        return await Promise.race([work, aborted]);
+      } finally {
+        if (onAbort) {
+          signal.removeEventListener("abort", onAbort);
+        }
+      }
+    };
 
     let currentStage: AIRecoveryStage =
       "CONFIGURATION";
@@ -187,6 +220,10 @@ export class AIRecoveryOrchestrator {
       ),
     });
 
+    if (cancelled()) {
+      return createResult("FAILED", "RECOVERY_CANCELLED");
+    }
+
     currentStage = "AUTHORIZATION";
 
     if (!enabled || !this.provider) {
@@ -204,13 +241,21 @@ export class AIRecoveryOrchestrator {
       );
     }
 
+    let providerTimedOut = false;
+
     try {
       currentStage = "DOM_EXTRACTION";
 
-      const context = await this.extractor.extract({
-        maxElements: 100,
-        maxTextLength: 120,
-      });
+      const context = await raceCancellation(
+        this.extractor.extract({
+          maxElements: 100,
+          maxTextLength: 120,
+        })
+      );
+
+      if (cancelled()) {
+        return createResult("FAILED", "RECOVERY_CANCELLED");
+      }
 
       const request = this.requestBuilder.build(
         primarySelector,
@@ -219,29 +264,43 @@ export class AIRecoveryOrchestrator {
 
       currentStage = "PROVIDER";
 
-      let providerTimer:
-        | ReturnType<typeof setTimeout>
-        | undefined;
-
+      const providerController = new AbortController();
+      let providerTimer: ReturnType<typeof setTimeout> | undefined;
       let candidates: AILocatorCandidate[];
 
-      try {
-        candidates = await Promise.race([
-          this.provider.suggestLocators(request),
+      const abortProvider = (): void => {
+        providerController.abort();
+      };
 
-          new Promise<never>((_, reject) => {
-            providerTimer = setTimeout(
-              () => reject(
-                new Error("PROVIDER_TIMEOUT")
-              ),
-              providerTimeoutMs
-            );
-          }),
-        ]);
+      if (signal) {
+        signal.addEventListener("abort", abortProvider, { once: true });
+        if (signal.aborted) abortProvider();
+      }
+
+      try {
+        // Start the timeout before invoking the provider. Record timeout
+        // independently of the provider's abort-related rejection.
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          providerTimer = setTimeout(() => {
+            providerTimedOut = true;
+            reject(new Error("PROVIDER_TIMEOUT"));
+            abortProvider();
+          }, providerTimeoutMs);
+        });
+
+        candidates = await raceCancellation(Promise.race([
+          this.provider.suggestLocators(request, providerController.signal),
+          timeoutPromise,
+        ]));
+
+        if (cancelled()) {
+          return createResult("FAILED", "RECOVERY_CANCELLED");
+        }
       } finally {
         if (providerTimer !== undefined) {
           clearTimeout(providerTimer);
         }
+        signal?.removeEventListener("abort", abortProvider);
       }
 
       if (!Array.isArray(candidates)) {
@@ -326,6 +385,10 @@ export class AIRecoveryOrchestrator {
         const [candidateIndex, candidate]
         of sortedCandidates.entries()
       ) {
+        if (cancelled()) {
+          return createResult("FAILED", "RECOVERY_CANCELLED");
+        }
+
         const remainingMs = remainingBudget();
 
         if (remainingMs <= 0) {
@@ -381,7 +444,7 @@ export class AIRecoveryOrchestrator {
               timeoutMs: candidateTimeoutMs,
             });
 
-          const validation = await Promise.race([
+          const validation = await raceCancellation(Promise.race([
             validationPromise,
 
             new Promise<typeof timeoutMarker>(
@@ -395,7 +458,11 @@ export class AIRecoveryOrchestrator {
                 );
               }
             ),
-          ]);
+          ]));
+
+          if (cancelled()) {
+            return createResult("FAILED", "RECOVERY_CANCELLED");
+          }
 
           const validationDurationMs =
             performance.now() - startedAt;
@@ -461,6 +528,10 @@ export class AIRecoveryOrchestrator {
         );
       }
 
+      if (cancelled()) {
+        return createResult("FAILED", "RECOVERY_CANCELLED");
+      }
+
       currentStage = "RANKING";
 
       const ranked = this.ranker.rank(
@@ -521,6 +592,10 @@ export class AIRecoveryOrchestrator {
         );
       }
 
+      if (cancelled()) {
+        return createResult("FAILED", "RECOVERY_CANCELLED");
+      }
+
       currentStage = "COMPLETED";
 
       return {
@@ -538,11 +613,16 @@ export class AIRecoveryOrchestrator {
         ),
       };
     } catch (error: unknown) {
+      if (cancelled()) {
+        return createResult("FAILED", "RECOVERY_CANCELLED");
+      }
+
       return createResult(
         "FAILED",
         "RECOVERY_PIPELINE_FAILED",
-        error instanceof Error &&
-          error.message === "PROVIDER_TIMEOUT"
+        providerTimedOut ||
+          (error instanceof Error &&
+            error.message === "PROVIDER_TIMEOUT")
       );
     }
   }
