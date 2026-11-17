@@ -9,7 +9,7 @@ const demoUrl = "http://localhost:4173";
 test.describe("Real-World Recovery Demo", () => {
   /**
    * RWR-001
-   * Verify that the original login selector works.
+   * Verify the original login selector works.
    */
   test(
     "RWR-001: original login selector works",
@@ -29,8 +29,7 @@ test.describe("Real-World Recovery Demo", () => {
 
   /**
    * RWR-002
-   * Verify that Version B removes the original
-   * login selector and introduces a new one.
+   * Verify Version B removes the original selector.
    */
   test(
     "RWR-002: changed UI removes original selector",
@@ -51,8 +50,7 @@ test.describe("Real-World Recovery Demo", () => {
 
   /**
    * RWR-003
-   * Verify that the updated login interface
-   * continues to function correctly.
+   * Verify Version B remains functional.
    */
   test(
     "RWR-003: changed UI remains functional",
@@ -76,9 +74,7 @@ test.describe("Real-World Recovery Demo", () => {
 
   /**
    * RWR-004
-   * Verify that AutoHeal-QA can recover a
-   * broken primary locator using a trusted
-   * deterministic fallback.
+   * Verify recovery using a trusted fallback.
    */
   test(
     "RWR-004: trusted fallback recovers changed UI",
@@ -108,8 +104,6 @@ test.describe("Real-World Recovery Demo", () => {
       await expect(button).toBeVisible();
       await expect(button).toHaveText("Continue");
 
-      // Confirm the recovered locator can
-      // interact with the updated interface.
       await page.locator("#username").fill("demo");
       await page.locator("#password").fill("demo123");
 
@@ -123,12 +117,7 @@ test.describe("Real-World Recovery Demo", () => {
 
   /**
    * RWR-005
-   * Verify that AI recovery can suggest a valid
-   * replacement without automatically executing
-   * the AI-generated locator.
-   *
-   * Uses MockAIProvider to avoid external
-   * API requests during regression testing.
+   * AI suggestions must remain advisory-only.
    */
   test(
     "RWR-005: AI suggestion remains advisory",
@@ -149,8 +138,6 @@ test.describe("Real-World Recovery Demo", () => {
         provider
       );
 
-      // AI recovery should evaluate the candidate,
-      // but must not execute it automatically.
       await expect(
         healing.resolve(
           "#login-button",
@@ -168,7 +155,6 @@ test.describe("Real-World Recovery Demo", () => {
         "Self-healing failed for locator: #login-button"
       );
 
-      // Verify the recovery audit attachment.
       const attachment = testInfo.attachments.find(
         (item) =>
           item.name === "autoheal-ai-recovery-event"
@@ -189,8 +175,6 @@ test.describe("Real-World Recovery Demo", () => {
       expect(event.provider).toBe("mock");
       expect(event.confidence).toBe(0.95);
 
-      // Audit attachments must not expose
-      // sensitive selector information.
       expect(event).not.toHaveProperty(
         "suggestedSelector"
       );
@@ -199,8 +183,302 @@ test.describe("Real-World Recovery Demo", () => {
         "primarySelector"
       );
 
-      // Verify that the AI suggestion did not
-      // automatically submit the login form.
+      await expect(
+        page.getByRole("status")
+      ).toBeEmpty();
+    }
+  );
+
+  /**
+   * RWR-006
+   * Reject a fallback below the confidence threshold.
+   */
+  test(
+    "RWR-006: rejects low-confidence fallback",
+    async ({ page }) => {
+      await page.goto(demoUrl);
+
+      await page.locator("#version").selectOption("b");
+
+      const healing = new SelfHealingLocator(page);
+
+      await expect(
+        healing.resolve(
+          "#login-button",
+          [
+            {
+              name: "low-confidence fallback",
+              selector: '[data-testid="sign-in"]',
+              confidence: 0.5,
+            },
+          ],
+          {
+            enabled: true,
+            timeoutMs: 300,
+            minimumConfidence: 0.85,
+          }
+        )
+      ).rejects.toThrow("Self-healing failed");
+
+      await expect(
+        page.getByRole("status")
+      ).toBeEmpty();
+    }
+  );
+
+  /**
+   * RWR-007
+   * Reject ambiguous fallback selectors.
+   */
+  test(
+    "RWR-007: rejects ambiguous fallback",
+    async ({ page }) => {
+      await page.goto(demoUrl);
+
+      await page.locator("#version").selectOption("b");
+
+      await page.evaluate(() => {
+        const duplicate = document.createElement(
+          "button"
+        );
+
+        duplicate.type = "button";
+
+        duplicate.setAttribute(
+          "data-testid",
+          "sign-in"
+        );
+
+        duplicate.textContent = "Duplicate";
+
+        document.body.appendChild(duplicate);
+      });
+
+      const healing = new SelfHealingLocator(page);
+
+      await expect(
+        healing.resolve(
+          "#login-button",
+          [
+            {
+              name: "ambiguous fallback",
+              selector: '[data-testid="sign-in"]',
+              confidence: 0.95,
+            },
+          ],
+          {
+            enabled: true,
+            timeoutMs: 300,
+          }
+        )
+      ).rejects.toThrow("Self-healing failed");
+
+      await expect(
+        page.locator('[data-testid="sign-in"]')
+      ).toHaveCount(2);
+
+      await expect(
+        page.getByRole("status")
+      ).toBeEmpty();
+    }
+  );
+
+  /**
+   * RWR-008
+   * Provider failures must be handled safely.
+   */
+  test(
+    "RWR-008: handles AI provider failure",
+    async ({ page }, testInfo) => {
+      await page.goto(demoUrl);
+
+      await page.locator("#version").selectOption("b");
+
+      const failingProvider = {
+        name: "mock",
+
+        async suggestLocators() {
+          throw new Error(
+            "Simulated provider failure"
+          );
+        },
+      };
+
+      const healing = new SelfHealingLocator(
+        page,
+        failingProvider
+      );
+
+      await expect(
+        healing.resolve(
+          "#login-button",
+          [],
+          {
+            enabled: true,
+            timeoutMs: 300,
+            aiRecovery: {
+              enabled: true,
+            },
+          }
+        )
+      ).rejects.toThrow("Self-healing failed");
+
+      const attachment = testInfo.attachments.find(
+        (item) =>
+          item.name === "autoheal-ai-recovery-event"
+      );
+
+      expect(attachment).toBeDefined();
+      expect(attachment?.body).toBeDefined();
+
+      const event = JSON.parse(
+        attachment!.body!.toString("utf8")
+      );
+
+      expect(event.event).toBe(
+        "AI_RECOVERY_EVALUATED"
+      );
+
+      expect(event.status).toBe("FAILED");
+
+      expect(event.reason).toBe(
+        "RECOVERY_PIPELINE_FAILED"
+      );
+
+      await expect(
+        page.getByRole("status")
+      ).toBeEmpty();
+    }
+  );
+
+  /**
+   * RWR-009
+   * Verify timeout enforcement for a slow provider.
+   */
+  test(
+    "RWR-009: handles AI provider timeout",
+    async ({ page }, testInfo) => {
+      await page.goto(demoUrl);
+
+      await page.locator("#version").selectOption("b");
+
+      const slowProvider = {
+        name: "mock",
+
+        async suggestLocators(): Promise<never> {
+          return new Promise<never>(() => {});
+        },
+      };
+
+      const healing = new SelfHealingLocator(
+        page,
+        slowProvider
+      );
+
+      await expect(
+        healing.resolve(
+          "#login-button",
+          [],
+          {
+            enabled: true,
+            timeoutMs: 300,
+            aiRecovery: {
+              enabled: true,
+              providerTimeoutMs: 100,
+              validationTimeoutMs: 500,
+            },
+          }
+        )
+      ).rejects.toThrow("Self-healing failed");
+
+      const attachment = testInfo.attachments.find(
+        (item) =>
+          item.name === "autoheal-ai-recovery-event"
+      );
+
+      expect(attachment).toBeDefined();
+      expect(attachment?.body).toBeDefined();
+
+      const event = JSON.parse(
+        attachment!.body!.toString("utf8")
+      );
+
+      expect(event.event).toBe(
+        "AI_RECOVERY_EVALUATED"
+      );
+
+      expect(event.status).toBe("FAILED");
+
+      await expect(
+        page.getByRole("status")
+      ).toBeEmpty();
+    }
+  );
+
+  /**
+   * RWR-010
+   * Verify an already-aborted recovery is rejected.
+   */
+  test(
+    "RWR-010: handles AI recovery cancellation",
+    async ({ page }, testInfo) => {
+      await page.goto(demoUrl);
+
+      await page.locator("#version").selectOption("b");
+
+      const controller = new AbortController();
+
+      controller.abort();
+
+      const provider = new MockAIProvider([
+        {
+          selector: '[data-testid="sign-in"]',
+          confidence: 0.95,
+        },
+      ]);
+
+      const healing = new SelfHealingLocator(
+        page,
+        provider
+      );
+
+      await expect(
+        healing.resolve(
+          "#login-button",
+          [],
+          {
+            enabled: true,
+            timeoutMs: 300,
+            aiRecovery: {
+              enabled: true,
+              signal: controller.signal,
+            },
+          }
+        )
+      ).rejects.toThrow("Self-healing failed");
+
+      const attachment = testInfo.attachments.find(
+        (item) =>
+          item.name === "autoheal-ai-recovery-event"
+      );
+
+      expect(attachment).toBeDefined();
+      expect(attachment?.body).toBeDefined();
+
+      const event = JSON.parse(
+        attachment!.body!.toString("utf8")
+      );
+
+      expect(event.event).toBe(
+        "AI_RECOVERY_EVALUATED"
+      );
+
+      expect(event.status).toBe("FAILED");
+
+      expect(event.reason).toBe(
+        "RECOVERY_CANCELLED"
+      );
+
       await expect(
         page.getByRole("status")
       ).toBeEmpty();
