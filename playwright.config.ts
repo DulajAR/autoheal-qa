@@ -21,12 +21,16 @@ export default defineConfig({
   /**
    * Exclude isolated test suites from
    * the main cross-browser execution.
+   *
+   * External integration tests have their own
+   * configuration: playwright.external.config.ts
    */
   testIgnore: [
     "**/reliability/**",
     "**/live-ai/**",
     "**/gemini/**",
     "**/dashboard/**",
+    "**/external/**",
   ],
 
   /**
@@ -144,13 +148,10 @@ export default defineConfig({
 
   /**
    * Automatically start the real-world recovery
-   * demo application before executing tests.
+   * demo application before executing main tests.
    *
    * The demo is served from:
    * demo/recovery-app/index.html
-   *
-   * This fixes connection failures on port 4173
-   * in both local and GitHub Actions execution.
    */
   webServer: {
     command:
