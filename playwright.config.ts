@@ -13,11 +13,10 @@ export default defineConfig({
   testDir: "./tests",
 
   /**
- * Discover Playwright specifications only.
- * Exclude Node.js reporting regression tests.
- */
-testMatch: "**/*.spec.ts",
-
+   * Discover Playwright specifications only.
+   * Exclude Node.js reporting regression tests.
+   */
+  testMatch: "**/*.spec.ts",
 
   /**
    * Exclude isolated test suites from
@@ -29,7 +28,6 @@ testMatch: "**/*.spec.ts",
     "**/gemini/**",
     "**/dashboard/**",
   ],
-
 
   /**
    * Enable parallel test execution.
@@ -142,6 +140,34 @@ testMatch: "**/*.spec.ts",
      * Retain video recordings for failed tests.
      */
     video: "retain-on-failure",
+  },
+
+  /**
+   * Automatically start the real-world recovery
+   * demo application before executing tests.
+   *
+   * The demo is served from:
+   * demo/recovery-app/index.html
+   *
+   * This fixes connection failures on port 4173
+   * in both local and GitHub Actions execution.
+   */
+  webServer: {
+    command:
+      "npx http-server demo/recovery-app -a 127.0.0.1 -p 4173 -c-1",
+
+    url: "http://127.0.0.1:4173/",
+
+    /**
+     * Reuse an existing server locally.
+     * Require a fresh server in CI.
+     */
+    reuseExistingServer: !process.env.CI,
+
+    /**
+     * Wait up to 30 seconds for startup.
+     */
+    timeout: 30_000,
   },
 
   /**
