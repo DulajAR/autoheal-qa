@@ -1,9 +1,13 @@
+
 {
   "name": "autoheal-qa",
   "version": "1.0.0",
   "private": true,
   "description": "Enterprise AI-Powered Self-Healing Test Automation Framework built with Playwright, TypeScript, and Hybrid AI.",
   "main": "index.js",
+  "bin": {
+    "autoheal": "./bin/autoheal.cjs"
+  },
   "scripts": {
     "test": "playwright test",
     "test:dashboard": "playwright test --config=playwright.dashboard.config.ts",
@@ -18,6 +22,7 @@
     "test:trace": "playwright test --trace on",
     "test:reliability": "playwright test --config=playwright.reliability.config.ts",
     "test:reliability:list": "playwright test --config=playwright.reliability.config.ts --list",
+    "test:cli": "node --test tests/cli/*.test.cjs",
     "report": "playwright show-report reports/html",
     "report:reliability": "playwright show-report reports/reliability-tests",
     "typecheck": "tsc --noEmit",
