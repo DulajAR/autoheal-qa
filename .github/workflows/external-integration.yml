@@ -8,10 +8,13 @@ on:
       - main
     paths:
       - "tests/external/**"
+      - "tests/reporting/**"
       - "playwright.external.config.ts"
       - "src/core/**"
       - "src/ai/**"
       - "src/reporters/**"
+      - "scripts/validate-external-report.cjs"
+      - "scripts/validate-healing-report.cjs"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/external-integration.yml"
@@ -35,24 +38,35 @@ jobs:
       CI: "true"
 
     steps:
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Set up Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
 
+      # 3. Install dependencies
       - name: Install dependencies
         run: npm ci
 
+      # 4. Install Chromium
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      # 5. Validate TypeScript
       - name: Validate TypeScript
         run: npm run typecheck
 
+      # 6. Run reporting regression tests
+      - name: Run reporting regression tests
+        id: reporting_tests
+        run: npm run test:reporting
+
+      # 7. Run external E2E tests
       - name: Run external integration tests
         id: external_tests
         run: >
@@ -60,11 +74,22 @@ jobs:
           --config=playwright.external.config.ts
           --workers=1
 
+      # 8. Validate external report
+      - name: Validate external integration report
+        id: report_validation
+        if: always()
+        run: >
+          node scripts/validate-external-report.cjs
+          reports/autoheal/summary.json
+
+      # 9. Publish GitHub Actions summary
       - name: Publish execution summary
         if: always()
         shell: bash
         env:
+          REPORTING_RESULT: ${{ steps.reporting_tests.outcome }}
           TEST_RESULT: ${{ steps.external_tests.outcome }}
+          VALIDATION_RESULT: ${{ steps.report_validation.outcome }}
         run: |
           {
             echo "## AutoHeal QA - External Integration"
@@ -72,15 +97,68 @@ jobs:
             echo "| Item | Result |"
             echo "|---|---|"
             echo "| Commit | $GITHUB_SHA |"
-            echo "| External tests | $TEST_RESULT |"
+            echo "| Reporting regression tests | $REPORTING_RESULT |"
+            echo "| External E2E tests | $TEST_RESULT |"
+            echo "| Report validation | $VALIDATION_RESULT |"
 
             if [ -f reports/autoheal/summary.json ]; then
               echo "| Reporter summary | Generated |"
             else
               echo "| Reporter summary | Not generated |"
             fi
+
+            if [ -d reports/external-html ]; then
+              echo "| HTML report | Generated |"
+            else
+              echo "| HTML report | Not generated |"
+            fi
+
+            echo ""
+            echo "### Execution metrics"
+            echo ""
+
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [ -f reports/autoheal/summary.json ]; then
+            node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require("node:fs");
+
+          try {
+            const report = JSON.parse(
+              fs.readFileSync(
+                "reports/autoheal/summary.json",
+                "utf8"
+              )
+            );
+
+            const rows = [
+              ["Total attempts", report.totalAttempts],
+              ["Passed attempts", report.passedAttempts],
+              ["Failed attempts", report.failedAttempts],
+              ["Healing events", report.healing?.totalEvents],
+              ["Healed attempts", report.healing?.healedAttempts],
+              ["AI evaluations", report.aiRecovery?.totalEvaluations],
+              ["AI suggestions", report.aiRecovery?.suggested],
+              ["AI failures", report.aiRecovery?.failed],
+            ];
+
+            console.log("| Metric | Value |");
+            console.log("|---|---|");
+
+            for (const [name, value] of rows) {
+              console.log(`| ${name} | ${value ?? "N/A"} |`);
+            }
+          } catch (error) {
+            console.log(
+              `Report metrics unavailable: ${error.message}`
+            );
+          }
+          NODE
+          else
+            echo "Report metrics unavailable." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # 10. Upload reports and artifacts
       - name: Upload external integration artifacts
         if: always()
         uses: actions/upload-artifact@v4
