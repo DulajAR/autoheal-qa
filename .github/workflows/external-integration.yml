@@ -1,0 +1,94 @@
+
+name: AutoHeal QA - External Integration CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - "tests/external/**"
+      - "playwright.external.config.ts"
+      - "src/core/**"
+      - "src/ai/**"
+      - "src/reporters/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/external-integration.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  external-integration:
+    name: SauceDemo E2E Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CI: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Validate TypeScript
+        run: npm run typecheck
+
+      - name: Run external integration tests
+        id: external_tests
+        run: >
+          npx playwright test
+          --config=playwright.external.config.ts
+          --workers=1
+
+      - name: Publish execution summary
+        if: always()
+        shell: bash
+        env:
+          TEST_RESULT: ${{ steps.external_tests.outcome }}
+        run: |
+          {
+            echo "## AutoHeal QA - External Integration"
+            echo ""
+            echo "| Item | Result |"
+            echo "|---|---|"
+            echo "| Commit | $GITHUB_SHA |"
+            echo "| External tests | $TEST_RESULT |"
+
+            if [ -f reports/autoheal/summary.json ]; then
+              echo "| Reporter summary | Generated |"
+            else
+              echo "| Reporter summary | Not generated |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload external integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoheal-external-integration
+          path: |
+            reports/external-html/
+            reports/autoheal/summary.json
+            test-results/external/
+          if-no-files-found: warn
+          retention-days: 7
