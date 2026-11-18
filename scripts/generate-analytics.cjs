@@ -4,6 +4,7 @@ const path = require('node:path');
 const summaryFile = path.resolve(process.argv[2] || 'reports/autoheal/summary.json');
 const outputFile = path.resolve(process.argv[3] || 'reports/autoheal/analytics.html');
 const reliabilityFile = path.resolve(process.argv[4] || 'reports/autoheal/reliability.json');
+const stabilityFile = path.resolve(process.argv[5] || 'reports/autoheal/stability.json');
 function readJSON(file, required = false) {
   if (!fs.existsSync(file)) {
     if (required) throw new Error(`Required report not found: ${file}`);
@@ -17,7 +18,56 @@ try {
   const report = readJSON(summaryFile, true);
   if (!report || !Array.isArray(report.tests)) throw new Error('Invalid summary format: tests array missing.');
   const reliability = readJSON(reliabilityFile);
+  const rawStability = fs.existsSync(stabilityFile) ? readJSON(stabilityFile) : null;
+  if (!rawStability) console.warn(`[AutoHeal QA] Optional stability report missing: ${stabilityFile}`);
   if (reliability && (reliability.schemaVersion !== 1 || !Array.isArray(reliability.trend))) throw new Error('Unsupported reliability report format.');
+  // Strict allowlist: stability data may originate from untrusted test names and history.
+  // Never embed arbitrary report fields, selectors, DOM content, or run identifiers.
+  const count = n => Number.isSafeInteger(n) && n >= 0 ? n : 0;
+  const percentValue = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+  const durationValue = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
+  function projectStability(raw) {
+    if (!raw) return null;
+    if (raw.schemaVersion !== 1 || !Array.isArray(raw.tests) ||
+        !raw.coverage || !Array.isArray(raw.coverage.byProject) ||
+        !Array.isArray(raw.coverage.comparableGroups)) {
+      throw new Error('Unsupported stability report format.');
+    }
+    const validClasses = new Set(['flaky', 'failing', 'passing', 'skipped']);
+    return {
+      runCount: count(raw.runCount),
+      testCount: count(raw.testCount),
+      flakyTestCount: count(raw.flakyTestCount),
+      failingTestCount: count(raw.failingTestCount),
+      testsWithMissingRuns: count(raw.testsWithMissingRuns),
+      coverage: {
+        testsMissingFromProjectRuns: count(raw.coverage.testsMissingFromProjectRuns),
+        byProject: raw.coverage.byProject.map(p => ({
+          project: String(p.project || 'unknown'),
+          runCount: count(p.runCount), testCount: count(p.testCount),
+          testsPresentInEveryProjectRun: count(p.testsPresentInEveryProjectRun),
+          testsMissingFromProjectRuns: count(p.testsMissingFromProjectRuns)
+        })),
+        comparableGroups: raw.coverage.comparableGroups.map(g => ({
+          project: String(g.project || 'unknown'),
+          runCount: count(g.runCount), testCount: count(g.testCount)
+        }))
+      },
+      tests: raw.tests.filter(t => t && validClasses.has(t.classification)).map(t => ({
+        project: String(t.project || 'unknown'), title: String(t.title || ''),
+        classification: t.classification,
+        observedRuns: count(t.observedRuns),
+        projectRunCount: count(t.projectRunCount),
+        missingProjectRuns: count(t.missingProjectRuns),
+        observedCoveragePercent: percentValue(t.observedCoveragePercent),
+        passedRuns: count(t.passedRuns), failedRuns: count(t.failedRuns),
+        retryRecoveredRuns: count(t.retryRecoveredRuns),
+        averageDurationMs: durationValue(t.duration?.averageMs),
+        measuredRuns: count(t.duration?.measuredRuns)
+      }))
+    };
+  }
+  const stability = projectStability(rawStability);
   const tests = report.tests;
   const allowedReasons = new Set([
     'INVALID_SELECTOR', 'INVALID_CONFIDENCE', 'LOW_CONFIDENCE',
@@ -155,7 +205,7 @@ try {
     healingCount: Number(report.healing?.totalEvents ?? events.length),
     healedAttempts: Number(report.healing?.healedAttempts ?? 0),
     confidence: report.healing?.averageConfidence == null ? null : Number(report.healing.averageConfidence),
-    browsers, events, aiEvents, aiRecovery,
+    browsers, events, aiEvents, aiRecovery, stability,
     tests: tests.map(t => ({title: String(t.title || ''), project: String(t.project || 'unknown'), status: String(t.status || ''), durationMs: Number(t.durationMs || 0), retry: Number(t.retry || 0), healingCount: t.healingEvents?.length || 0, aiCount: t.aiRecoveryEvents?.length || 0})),
     reliability: reliability ? {
       runCount: reliability.runCount,
@@ -172,7 +222,7 @@ try {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AutoHeal QA | Analytics</title>
 <style>
-:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#090e1a;color:#e7ecf8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,#19345c 0,transparent 37%),#090e1a}.shell{max-width:1250px;margin:auto;padding:40px 24px 80px}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7bb8ff;font-weight:700}h1{font-size:clamp(30px,5vw,48px);margin:10px 0}p{color:#a6b5d1;line-height:1.55}.header{display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:28px}.pill{border:1px solid #2b4662;background:#10243b;border-radius:999px;padding:9px 16px;color:#a7e6ca;font-weight:700}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card,.panel{background:#111a2b;border:1px solid #25334a;border-radius:18px;padding:22px;box-shadow:0 14px 32px #0002}.card small{display:block;color:#91a5c6;font-size:13px}.number{font-size:34px;font-weight:800;margin:12px 0 3px}.green{color:#63e0aa}.blue{color:#79b6ff}.panel{margin-top:18px}h2{font-size:19px;margin:0 0 18px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bars{display:grid;gap:15px}.barrow{display:grid;grid-template-columns:minmax(100px,1fr) 2fr 75px;gap:12px;align-items:center;font-size:13px}.barrow span{overflow-wrap:anywhere}.track{height:11px;background:#25344b;border-radius:20px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,#478de8,#6de1c3);border-radius:20px}.muted{color:#90a2bf}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:650px;text-align:left}th,td{padding:13px 11px;border-bottom:1px solid #263449;font-size:13px}th{color:#8ea8ca;font-weight:600}td{color:#d6e1f5}code{font-size:12px;color:#a9d5ff;overflow-wrap:anywhere}.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}select,input{background:#0b1424;color:#e8f0ff;border:1px solid #33425c;border-radius:10px;padding:10px 12px;max-width:100%}input{min-width:230px;flex:1}.empty{color:#9caecb;padding:12px 0}.foot{margin-top:20px;font-size:12px;color:#8296b5}.sectiontitle{margin-top:32px;color:#a8c9ff;font-size:13px;letter-spacing:.14em;text-transform:uppercase}.hint{font-size:12px}.smallgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mini{border:1px solid #293d58;border-radius:12px;padding:14px}.mini strong{display:block;font-size:24px;margin-top:8px}.ai-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.ai-metrics .card{padding:18px}.ai-note{border-left:3px solid #79b6ff;padding-left:12px}.decision-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.decision-grid .card{padding:18px}.recovery-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.observability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.observability-grid .card{padding:18px}@media(max-width:800px){.observability-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.observability-grid{grid-template-columns:1fr}}@media(max-width:800px){.ai-metrics,.decision-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:520px){.ai-metrics,.decision-grid,.metrics,.smallgrid{grid-template-columns:1fr}.shell{padding:24px 14px}.barrow{grid-template-columns:90px 1fr 60px}}
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#090e1a;color:#e7ecf8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% -10%,#19345c 0,transparent 37%),#090e1a}.shell{max-width:1250px;margin:auto;padding:40px 24px 80px}.eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#7bb8ff;font-weight:700}h1{font-size:clamp(30px,5vw,48px);margin:10px 0}p{color:#a6b5d1;line-height:1.55}.header{display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:28px}.pill{border:1px solid #2b4662;background:#10243b;border-radius:999px;padding:9px 16px;color:#a7e6ca;font-weight:700}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.card,.panel{background:#111a2b;border:1px solid #25334a;border-radius:18px;padding:22px;box-shadow:0 14px 32px #0002}.card small{display:block;color:#91a5c6;font-size:13px}.number{font-size:34px;font-weight:800;margin:12px 0 3px}.green{color:#63e0aa}.blue{color:#79b6ff}.panel{margin-top:18px}h2{font-size:19px;margin:0 0 18px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bars{display:grid;gap:15px}.barrow{display:grid;grid-template-columns:minmax(100px,1fr) 2fr 75px;gap:12px;align-items:center;font-size:13px}.barrow span{overflow-wrap:anywhere}.track{height:11px;background:#25344b;border-radius:20px;overflow:hidden}.fill{height:100%;background:linear-gradient(90deg,#478de8,#6de1c3);border-radius:20px}.muted{color:#90a2bf}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:650px;text-align:left}th,td{padding:13px 11px;border-bottom:1px solid #263449;font-size:13px}th{color:#8ea8ca;font-weight:600}td{color:#d6e1f5}code{font-size:12px;color:#a9d5ff;overflow-wrap:anywhere}.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}select,input{background:#0b1424;color:#e8f0ff;border:1px solid #33425c;border-radius:10px;padding:10px 12px;max-width:100%}input{min-width:230px;flex:1}.empty{color:#9caecb;padding:12px 0}.foot{margin-top:20px;font-size:12px;color:#8296b5}.sectiontitle{margin-top:32px;color:#a8c9ff;font-size:13px;letter-spacing:.14em;text-transform:uppercase}.hint{font-size:12px}.smallgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mini{border:1px solid #293d58;border-radius:12px;padding:14px}.mini strong{display:block;font-size:24px;margin-top:8px}.ai-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.ai-metrics .card{padding:18px}.ai-note{border-left:3px solid #79b6ff;padding-left:12px}.decision-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.decision-grid .card{padding:18px}.recovery-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.observability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.observability-grid .card{padding:18px}.stability-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px}.stability-grid .card{padding:18px}@media(max-width:800px){.stability-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.stability-grid{grid-template-columns:1fr}}@media(max-width:800px){.observability-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.observability-grid{grid-template-columns:1fr}}@media(max-width:800px){.ai-metrics,.decision-grid{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:520px){.ai-metrics,.decision-grid,.metrics,.smallgrid{grid-template-columns:1fr}.shell{padding:24px 14px}.barrow{grid-template-columns:90px 1fr 60px}}
 </style></head><body><main class="shell"><header class="header"><div><div class="eyebrow">Quality Engineering / Analytics</div><h1>AutoHeal QA <span class="blue">Insights</span></h1><p id="period">Playwright test execution and self-healing intelligence</p></div><span class="pill" id="overall">Report loaded</span></header>
 <section class="metrics"><div class="card"><small>Total test attempts</small><div class="number" id="total">—</div><small>Across configured projects</small></div><div class="card"><small>Passed attempts</small><div class="number green" id="passed">—</div><small id="passrate">Pass rate</small></div><div class="card"><small>Healing events</small><div class="number blue" id="heal">—</div><small id="healedattempts">Recovered attempts</small></div><div class="card"><small>Average selector confidence</small><div class="number" id="confidence">—</div><small>Configured recovery confidence, not success probability</small></div></section>
 <section class="layout"><div class="panel"><h2>Browser execution — latest run</h2><div id="browserBars" class="bars"></div></div><div class="panel"><h2>Healing by browser — latest run</h2><div id="healingBars" class="bars"></div></div></section>
@@ -209,9 +259,19 @@ try {
 <section class="layout"><div class="panel"><h2>Pass rate by run</h2><div id="passTrend" class="bars"></div></div><div class="panel"><h2>Healing events by run</h2><div id="healingTrend" class="bars"></div></div></section>
 <section class="layout"><div class="panel"><h2>Browser reliability — all saved runs</h2><div id="browserReliability" class="bars"></div></div><div class="panel"><h2>Frequently recovered selectors</h2><div id="selectors" class="bars"></div><p class="hint">Controlled self-healing test fixtures may intentionally generate these recoveries.</p></div></section>
 <section class="panel"><h2>Possible flaky tests</h2><p class="hint">A candidate must have both passed and failed attempts across saved executions. This is an indicator, not a diagnosis.</p><div class="tablewrap"><table><thead><tr><th>Test</th><th>Browser</th><th>Passed</th><th>Failed</th><th>Pass rate</th></tr></thead><tbody id="flakyBody"></tbody></table></div><p id="flakyEmpty" class="empty" hidden>No possible flaky tests detected in saved history.</p></section>
+ <div class="sectiontitle">Historical test stability</div>
+ <p class="hint">Coverage is based on observed tests, not intended selection. A missing test is not a failed test. Compare equivalent suite groups before drawing stability conclusions.</p>
+ <section class="stability-grid">
+ <div class="card"><small>Historical tests</small><div class="number blue" id="stabilityTests">—</div><small id="stabilityRuns">Saved runs</small></div>
+ <div class="card"><small>Flaky tests</small><div class="number" id="stabilityFlaky">—</div><small>Cross-run failures or retry recoveries</small></div>
+ <div class="card"><small>Failing tests</small><div class="number" id="stabilityFailing">—</div><small>Observed failures</small></div>
+ <div class="card"><small>Tests missing from project runs</small><div class="number" id="stabilityMissing">—</div><small>Not counted as failures</small></div>
+ </section>
+ <section class="layout"><div class="panel"><h2>Browser coverage — observed runs</h2><div class="tablewrap"><table><thead><tr><th>Browser</th><th>Runs</th><th>Unique tests</th><th>Present in all runs</th><th>Missing in some runs</th></tr></thead><tbody id="stabilityCoverageBody"></tbody></table></div></div><div class="panel"><h2>Comparable execution groups</h2><div class="tablewrap"><table><thead><tr><th>Browser</th><th>Equivalent runs</th><th>Tests per run</th></tr></thead><tbody id="stabilityGroupsBody"></tbody></table></div></div></section>
+ <section class="panel"><h2>Historical test stability and duration</h2><div class="filters"><select id="stabilityBrowserFilter" aria-label="Filter stability by browser"><option value="">All browsers</option></select><select id="stabilityClassFilter" aria-label="Filter stability by classification"><option value="">All classifications</option><option value="flaky">Flaky</option><option value="failing">Failing</option><option value="passing">Passing</option><option value="skipped">Skipped</option></select><input id="stabilitySearch" aria-label="Search historical tests" placeholder="Search test names…"></div><div class="tablewrap"><table><thead><tr><th>Test</th><th>Browser</th><th>Classification</th><th>Observed runs</th><th>Project coverage</th><th>Retry recoveries</th><th>Average duration</th></tr></thead><tbody id="stabilityTestsBody"></tbody></table></div><p class="empty" id="stabilityEmpty" hidden>No matching historical stability data.</p></section>
 <div class="sectiontitle">Latest execution details</div>
 <section class="panel"><h2>Healing events — latest run</h2><div class="filters"><select id="browserFilter" aria-label="Filter healing events by browser"><option value="">All browsers</option></select><input id="eventSearch" aria-label="Search healing events" placeholder="Search selector or strategy…"></div><div class="tablewrap"><table><thead><tr><th>Time</th><th>Browser</th><th>Original selector</th><th>Recovered selector</th><th>Strategy</th><th>Confidence</th></tr></thead><tbody id="eventsBody"></tbody></table></div><p id="eventEmpty" class="empty" hidden>No matching healing events.</p></section>
-<section class="panel"><h2>Test execution details — latest run</h2><div class="filters"><select id="testBrowserFilter" aria-label="Filter tests by browser"><option value="">All browsers</option></select><input id="testSearch" aria-label="Search tests" placeholder="Search test names…"></div><div class="tablewrap"><table><thead><tr><th>Test</th><th>Browser</th><th>Status</th><th>Duration</th><th>Retries</th><th>Heals</th><th>AI evaluations</th></tr></thead><tbody id="testsBody"></tbody></table></div><p id="testEmpty" class="empty" hidden>No matching tests.</p></section><div class="foot">Standalone snapshot generated from summary.json and optional reliability.json. Run the generators again to refresh. Review report contents before publishing.</div></main>
+<section class="panel"><h2>Test execution details — latest run</h2><div class="filters"><select id="testBrowserFilter" aria-label="Filter tests by browser"><option value="">All browsers</option></select><input id="testSearch" aria-label="Search tests" placeholder="Search test names…"></div><div class="tablewrap"><table><thead><tr><th>Test</th><th>Browser</th><th>Status</th><th>Duration</th><th>Retries</th><th>Heals</th><th>AI evaluations</th></tr></thead><tbody id="testsBody"></tbody></table></div><p id="testEmpty" class="empty" hidden>No matching tests.</p></section><div class="foot">Standalone snapshot generated from summary.json and optional reliability.json and stability.json. Run the generators again to refresh. Review report contents before publishing.</div></main>
 <script id="report-data" type="application/json">${embedded}</script><script>
 'use strict';
 const d=JSON.parse(document.getElementById('report-data').textContent);
@@ -355,6 +415,52 @@ else{
   for(const t of r.possibleFlakyTests){const row=document.createElement('tr');cell(row,t.title);cell(row,t.project);cell(row,t.passedAttempts);cell(row,t.failedAttempts);cell(row,pct(t.passRatePercent));el('flakyBody').append(row);}
 }
 el('flakyEmpty').hidden=!!(r?.possibleFlakyTests?.length);
+const stability=d.stability;
+const stabilityTests=Array.isArray(stability?.tests)?stability.tests:[];
+const stabilityCoverage=stability?.coverage;
+const stabilityValue=value=>value==null?'—':String(value);
+el('stabilityTests').textContent=stabilityValue(stability?.testCount);
+el('stabilityRuns').textContent=stability?stability.runCount+' saved runs':'No stability data';
+el('stabilityFlaky').textContent=stabilityValue(stability?.flakyTestCount);
+el('stabilityFailing').textContent=stabilityValue(stability?.failingTestCount);
+el('stabilityMissing').textContent=stabilityValue(stabilityCoverage?.testsMissingFromProjectRuns);
+for(const project of stabilityCoverage?.byProject||[]){
+  const row=document.createElement('tr');
+  cell(row,project.project);cell(row,project.runCount);cell(row,project.testCount);
+  cell(row,project.testsPresentInEveryProjectRun);cell(row,project.testsMissingFromProjectRuns);
+  el('stabilityCoverageBody').append(row);
+}
+for(const group of stabilityCoverage?.comparableGroups||[]){
+  const row=document.createElement('tr');
+  cell(row,group.project);cell(row,group.runCount);cell(row,group.testCount);
+  el('stabilityGroupsBody').append(row);
+}
+for(const browser of [...new Set(stabilityTests.map(t=>t.project))].sort()){
+  const option=document.createElement('option');option.value=browser;option.textContent=browser;
+  el('stabilityBrowserFilter').append(option);
+}
+function renderStabilityTests(){
+  const browser=el('stabilityBrowserFilter').value;
+  const classification=el('stabilityClassFilter').value;
+  const search=el('stabilitySearch').value.trim().toLowerCase();
+  const matches=stabilityTests.filter(t=>(!browser||t.project===browser)&&
+    (!classification||t.classification===classification)&&
+    t.title.toLowerCase().includes(search));
+  const root=el('stabilityTestsBody');root.replaceChildren();
+  for(const t of matches){
+    const row=document.createElement('tr');
+    cell(row,t.title);cell(row,t.project);cell(row,t.classification);
+    cell(row,t.observedRuns);cell(row,t.observedCoveragePercent==null?'—':pct(t.observedCoveragePercent));
+    cell(row,t.retryRecoveredRuns);
+    cell(row,t.averageDurationMs==null?'—':Number(t.averageDurationMs).toFixed(3)+' ms');
+    root.append(row);
+  }
+  el('stabilityEmpty').hidden=matches.length>0;
+}
+for(const id of ['stabilityBrowserFilter','stabilityClassFilter','stabilitySearch']){
+  el(id).addEventListener('input',renderStabilityTests);
+}
+renderStabilityTests();
 function renderEvents(){const browser=el('browserFilter').value;const q=el('eventSearch').value.trim().toLowerCase();const root=el('eventsBody');root.replaceChildren();const matches=d.events.filter(e=>(!browser||e.project===browser)&&[e.primarySelector,e.recoveredSelector,e.strategy,e.test].join(' ').toLowerCase().includes(q));for(const e of matches){const row=document.createElement('tr');cell(row,fmtDate(e.timestamp));cell(row,e.project);cell(row,e.primarySelector||'',true);cell(row,e.recoveredSelector||'',true);cell(row,e.strategy||'');cell(row,e.confidence==null?'—':pct(Number(e.confidence)*100));root.append(row);}el('eventEmpty').hidden=matches.length>0;}
 function renderTests(){const browser=el('testBrowserFilter').value;const q=el('testSearch').value.trim().toLowerCase();const root=el('testsBody');root.replaceChildren();const matches=d.tests.filter(t=>(!browser||t.project===browser)&&t.title.toLowerCase().includes(q));for(const t of matches){const row=document.createElement('tr');cell(row,t.title.replace(/^\\s*>\\s*/,''));cell(row,t.project);cell(row,t.status);cell(row,(t.durationMs/1000).toFixed(2)+'s');cell(row,t.retry);cell(row,t.healingCount);cell(row,t.aiCount);root.append(row);}el('testEmpty').hidden=matches.length>0;}
 for(const id of ['browserFilter','eventSearch'])el(id).addEventListener('input',renderEvents);for(const id of ['testBrowserFilter','testSearch'])el(id).addEventListener('input',renderTests);renderEvents();renderTests();
@@ -362,7 +468,7 @@ for(const id of ['browserFilter','eventSearch'])el(id).addEventListener('input',
   fs.mkdirSync(path.dirname(outputFile), {recursive: true});
   fs.writeFileSync(outputFile, html, 'utf8');
   console.log(`[AutoHeal QA] Analytics dashboard generated: ${outputFile}`);
-  console.log(`[AutoHeal QA] ${data.total} attempts, ${data.healingCount} healing events, ${data.aiRecovery.totalEvaluations} AI evaluations, ${data.aiRecovery.decisionAnalytics.eventsWithAnalytics} decision analytics events, ${data.browsers.length} browser projects, ${reliability?.runCount ?? 0} historical runs`);
+  console.log(`[AutoHeal QA] ${data.total} attempts, ${data.healingCount} healing events, ${data.aiRecovery.totalEvaluations} AI evaluations, ${data.aiRecovery.decisionAnalytics.eventsWithAnalytics} decision analytics events, ${data.browsers.length} browser projects, ${reliability?.runCount ?? 0} historical runs, ${stability?.testCount ?? 0} stability tests`);
 } catch (error) {
   console.error(`[AutoHeal QA] ${error.message}`);
   process.exitCode = 1;
