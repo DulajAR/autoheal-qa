@@ -1,0 +1,75 @@
+
+name: AutoHeal QA - CLI CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - "bin/**"
+      - "tests/cli/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/cli-ci.yml"
+
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - "bin/**"
+      - "tests/cli/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/cli-ci.yml"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoheal-cli-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cli-tests:
+    name: CLI - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate CLI syntax
+        run: node --check bin/autoheal.cjs
+
+      - name: Run CLI regression tests
+        run: npm run test:cli
+
+      - name: Verify CLI version
+        run: node bin/autoheal.cjs --version
+
+      - name: Verify CLI environment
+        run: node bin/autoheal.cjs doctor
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run
