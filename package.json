@@ -1,10 +1,9 @@
-
 {
   "name": "autoheal-qa",
   "version": "1.0.0",
   "private": true,
   "description": "Enterprise AI-Powered Self-Healing Test Automation Framework built with Playwright, TypeScript, and Hybrid AI.",
-  "main": "index.js",
+  "main": "./dist/src/index.js",
   "bin": {
     "autoheal": "./bin/autoheal.cjs"
   },
@@ -35,7 +34,9 @@
     "validate:reliability": "npm run typecheck && npm run test:reliability",
     "test:ai:smoke": "playwright test --config=playwright.ai-smoke.config.ts --grep-invert AI-SMOKE-003",
     "test:ai:live": "playwright test --config=playwright.ai-smoke.config.ts --grep AI-SMOKE-003",
-    "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\""
+    "clean": "node -e \"const fs=require('node:fs'); for(const p of ['test-results','reports','playwright-report']) fs.rmSync(p,{recursive:true,force:true})\"",
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "npm run build"
   },
   "keywords": [
     "playwright",
@@ -57,8 +58,32 @@
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/node": "^26.6.6",
-    "dotenv": "^18.0.9",
     "http-server": "^14.1.1",
     "typescript": "^7.0.2"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "docs/CLI.md",
+    "dist/"
+  ],
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./reporter": {
+      "types": "./dist/src/reporter.d.ts",
+      "require": "./dist/src/reporter.js",
+      "default": "./dist/src/reporter.js"
+    }
+  },
+  "peerDependencies": {
+    "@playwright/test": "^1.64.1"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10"
   }
 }

@@ -6,18 +6,53 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 // -----------------------------------
-// 1. Project configuration
+// 1. Framework configuration
 // -----------------------------------
 
-const projectRoot = path.resolve(__dirname, "..");
-const packagePath = path.join(projectRoot, "package.json");
+const frameworkRoot = path.resolve(__dirname, "..");
+const packagePath = path.join(frameworkRoot, "package.json");
 
 const packageInfo = JSON.parse(
   fs.readFileSync(packagePath, "utf8")
 );
 
 // -----------------------------------
-// 2. CLI help
+// 2. Project directory resolution
+// -----------------------------------
+
+function resolveProjectRoot(projectDirectory = process.cwd()) {
+  if (
+    typeof projectDirectory !== "string" ||
+    projectDirectory.trim().length === 0
+  ) {
+    throw new Error(
+      "Project directory must be a non-empty string."
+    );
+  }
+
+  const resolvedPath = path.resolve(projectDirectory);
+
+  let stats;
+
+  try {
+    stats = fs.statSync(resolvedPath);
+  } catch {
+    throw new Error(
+      `Project directory does not exist: ${resolvedPath}`
+    );
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `Project path is not a directory: ${resolvedPath}`
+    );
+  }
+
+  return resolvedPath;
+}
+
+// -----------------------------------
+// 3. CLI help
 // -----------------------------------
 
 function printHelp() {
@@ -33,6 +68,7 @@ COMMANDS:
   help                Display available commands
 
 OPTIONS:
+  --project <path>    Project directory for doctor
   -h, --help          Show help information
   -v, --version       Show framework version
 
@@ -40,11 +76,12 @@ EXAMPLES:
   autoheal --help
   autoheal --version
   autoheal doctor
+  autoheal doctor --project ./client-project
 `);
 }
 
 // -----------------------------------
-// 3. Framework version
+// 4. CLI version
 // -----------------------------------
 
 function printVersion() {
@@ -52,7 +89,7 @@ function printVersion() {
 }
 
 // -----------------------------------
-// 4. External command execution
+// 5. Cross-platform command execution
 // -----------------------------------
 
 function checkCommand(command, args = []) {
@@ -60,8 +97,6 @@ function checkCommand(command, args = []) {
   let commandArgs = args;
 
   if (process.platform === "win32" && command === "npm") {
-    // Locate npm's JavaScript CLI next to Node.js.
-    // This avoids shell: true and the DEP0190 warning.
     const npmCliPath = path.resolve(
       path.dirname(process.execPath),
       "node_modules",
@@ -102,95 +137,196 @@ function checkCommand(command, args = []) {
 }
 
 // -----------------------------------
-// 5. Environment diagnostics
+// 6. Playwright dependency detection
 // -----------------------------------
 
-function runDoctor() {
-  console.log("\nAutoHeal QA - Environment Diagnostics\n");
-
-  let hasErrors = false;
-
-  // Check Node.js version
-  const nodeMajor = Number(
-    process.versions.node.split(".")[0]
-  );
-
-  const nodeOk = nodeMajor >= 22;
-
-  console.log(
-    `${nodeOk ? "PASS" : "FAIL"} Node.js: ${process.version}`
-  );
-
-  if (!nodeOk) {
-    hasErrors = true;
-  }
-
-  // Check npm installation
-  const npm = checkCommand("npm", ["--version"]);
-
-  console.log(
-    `${npm.ok ? "PASS" : "FAIL"} npm: ${npm.value}`
-  );
-
-  if (!npm.ok) {
-    hasErrors = true;
-  }
-
-  // Check Playwright dependency
-  const playwrightPath = path.join(
-    projectRoot,
+function dependencyInstalled(projectDirectory) {
+  const dependencyPath = path.join(
+    projectDirectory,
     "node_modules",
     "@playwright",
-    "test"
+    "test",
+    "package.json"
   );
 
-  const playwrightInstalled = fs.existsSync(
-    playwrightPath
-  );
+  return fs.existsSync(dependencyPath);
+}
 
-  console.log(
-    `${playwrightInstalled ? "PASS" : "FAIL"} Playwright dependency`
-  );
+// -----------------------------------
+// 7. AutoHeal reporter detection
+// -----------------------------------
 
-  if (!playwrightInstalled) {
-    hasErrors = true;
-  }
-
-  // Check Playwright configuration
-  const configPath = path.join(
-    projectRoot,
-    "playwright.config.ts"
-  );
-
-  const configExists = fs.existsSync(configPath);
-
-  console.log(
-    `${configExists ? "PASS" : "FAIL"} Playwright configuration`
-  );
-
-  if (!configExists) {
-    hasErrors = true;
-  }
-
-  // Check AutoHeal reporter
-  const reporterPath = path.join(
-    projectRoot,
+function reporterInstalled(projectDirectory) {
+  // Support the original framework source layout.
+  const sourceReporterPath = path.join(
+    projectDirectory,
     "src",
     "reporters",
     "AutoHealReporter.ts"
   );
 
-  const reporterExists = fs.existsSync(
-    reporterPath
+  if (fs.existsSync(sourceReporterPath)) {
+    return true;
+  }
+
+  // Support an npm-installed AutoHeal QA package.
+  const packageDirectory = path.join(
+    projectDirectory,
+    "node_modules",
+    "autoheal-qa"
   );
+
+  const packageJsonPath = path.join(
+    packageDirectory,
+    "package.json"
+  );
+
+  if (!fs.existsSync(packageJsonPath)) {
+    return false;
+  }
+
+  try {
+    const installedPackage = JSON.parse(
+      fs.readFileSync(packageJsonPath, "utf8")
+    );
+
+    if (installedPackage.name !== "autoheal-qa") {
+      return false;
+    }
+
+    const reporterExport =
+      installedPackage.exports?.["./reporter"];
+
+    if (!reporterExport) {
+      return false;
+    }
+
+    const reporterEntry =
+      typeof reporterExport === "string"
+        ? reporterExport
+        : reporterExport.require ??
+          reporterExport.default;
+
+    if (typeof reporterEntry !== "string") {
+      return false;
+    }
+
+    const resolvedEntry = path.resolve(
+      packageDirectory,
+      reporterEntry
+    );
+
+    const relativeEntry = path.relative(
+      packageDirectory,
+      resolvedEntry
+    );
+
+    // Reject paths that escape the installed package.
+    if (
+      relativeEntry === ".." ||
+      relativeEntry.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeEntry)
+    ) {
+      return false;
+    }
+
+    return (
+      fs.existsSync(resolvedEntry) &&
+      fs.statSync(resolvedEntry).isFile()
+    );
+  } catch {
+    return false;
+  }
+}
+
+// -----------------------------------
+// 8. Environment diagnostics
+// -----------------------------------
+
+function runDoctor(projectDirectory = process.cwd()) {
+  let targetRoot;
+
+  try {
+    targetRoot = resolveProjectRoot(projectDirectory);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exitCode = 1;
+    return false;
+  }
 
   console.log(
-    `${reporterExists ? "PASS" : "FAIL"} AutoHeal reporter`
+    "\nAutoHeal QA - Environment Diagnostics\n"
   );
 
-  if (!reporterExists) {
-    hasErrors = true;
+  console.log(`Project: ${targetRoot}\n`);
+
+  let hasErrors = false;
+
+  function report(label, passed, detail = "") {
+    console.log(
+      `${passed ? "PASS" : "FAIL"} ${label}${
+        detail ? `: ${detail}` : ""
+      }`
+    );
+
+    if (!passed) {
+      hasErrors = true;
+    }
   }
+
+  // Node.js version check.
+  const nodeMajor = Number(
+    process.versions.node.split(".")[0]
+  );
+
+  report(
+    "Node.js",
+    nodeMajor >= 22,
+    process.version
+  );
+
+  // npm availability check.
+  const npm = checkCommand("npm", ["--version"]);
+
+  report(
+    "npm",
+    npm.ok,
+    npm.value
+  );
+
+  // Playwright dependency check.
+  report(
+    "Playwright dependency",
+    dependencyInstalled(targetRoot)
+  );
+
+  // Playwright configuration check.
+  const configCandidates = [
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mjs",
+    "playwright.config.cjs",
+    "playwright.config.mts",
+    "playwright.config.cts",
+  ];
+
+  const configExists = configCandidates.some(
+    (name) =>
+      fs.existsSync(
+        path.join(targetRoot, name)
+      )
+  );
+
+  report(
+    "Playwright configuration",
+    configExists
+  );
+
+  // Support source-based and npm-installed reporters.
+  report(
+    "AutoHeal reporter",
+    reporterInstalled(targetRoot)
+  );
 
   console.log("");
 
@@ -211,13 +347,12 @@ function runDoctor() {
 }
 
 // -----------------------------------
-// 6. CLI command handler
+// 9. CLI command routing
 // -----------------------------------
 
 function main(args = process.argv.slice(2)) {
   const command = args[0];
 
-  // Help command
   if (
     !command ||
     command === "help" ||
@@ -237,7 +372,6 @@ function main(args = process.argv.slice(2)) {
     return;
   }
 
-  // Version command
   if (
     command === "--version" ||
     command === "-v"
@@ -255,25 +389,32 @@ function main(args = process.argv.slice(2)) {
     return;
   }
 
-  // Doctor command
   if (command === "doctor") {
-    if (args.length > 1) {
-      console.error(
-        "Error: doctor does not accept additional arguments."
-      );
-
-      process.exitCode = 1;
+    if (args.length === 1) {
+      runDoctor();
       return;
     }
 
-    runDoctor();
+    if (
+      args.length === 3 &&
+      args[1] === "--project" &&
+      typeof args[2] === "string" &&
+      args[2].trim().length > 0 &&
+      !args[2].startsWith("--")
+    ) {
+      runDoctor(args[2]);
+      return;
+    }
+
+    console.error(
+      "Error: doctor does not accept additional arguments except --project <path>."
+    );
+
+    process.exitCode = 1;
     return;
   }
 
-  // Unknown command
-  console.error(
-    `Unknown command: ${command}`
-  );
+  console.error(`Unknown command: ${command}`);
 
   console.error(
     "Run 'autoheal --help' for available commands."
@@ -283,7 +424,7 @@ function main(args = process.argv.slice(2)) {
 }
 
 // -----------------------------------
-// 7. CLI entry point
+// 10. CLI execution
 // -----------------------------------
 
 if (require.main === module) {
@@ -291,7 +432,7 @@ if (require.main === module) {
 }
 
 // -----------------------------------
-// 8. Exports for automated tests
+// 11. Public CLI module exports
 // -----------------------------------
 
 module.exports = {
@@ -300,4 +441,7 @@ module.exports = {
   printVersion,
   checkCommand,
   runDoctor,
+  resolveProjectRoot,
+  dependencyInstalled,
+  reporterInstalled,
 };
