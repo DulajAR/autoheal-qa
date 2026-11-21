@@ -1,3 +1,4 @@
+
 {
   "name": "autoheal-qa",
   "version": "1.0.0",
@@ -65,6 +66,7 @@
     "bin/",
     "README.md",
     "docs/CLI.md",
+    "docs/GETTING_STARTED.md",
     "dist/"
   ],
   "types": "./dist/src/index.d.ts",
