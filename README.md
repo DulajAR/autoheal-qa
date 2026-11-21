@@ -1,145 +1,181 @@
+
 # AutoHeal QA
 
 **AI-Powered Self-Healing Test Automation Framework**
 
-A TypeScript-based test automation framework built with **Playwright, Node.js, and Hybrid AI**, designed to improve automated testing reliability through intelligent locator recovery, secure AI integration, and structured test reporting.
+A TypeScript-based test automation framework built with **Playwright, Node.js, and Hybrid AI**, designed to improve automated testing reliability through controlled locator recovery, secure AI integration, and structured test reporting.
 
 [![Playwright](https://img.shields.io/badge/Playwright-Test%20Automation-2EAD33)](https://playwright.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178C6)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933)](https://nodejs.org/)
-![Development](https://img.shields.io/badge/Status-Active%20Development-blue)
+![Status](https://img.shields.io/badge/Status-Active%20Development-blue)
 ![License](https://img.shields.io/badge/License-Proprietary-red)
 
 ## Overview
 
-AutoHeal QA is an evolving test automation framework that combines traditional browser automation with AI-assisted locator recovery.
+AutoHeal QA is a modular test automation framework combining traditional Playwright automation with deterministic self-healing and optional AI-assisted locator recovery.
 
-When an application's UI changes and a locator becomes unavailable, the framework can evaluate trusted fallback locators and request AI-generated alternatives. Candidate selectors are validated and ranked before being presented as recovery suggestions.
+When an application's user interface changes, the framework can evaluate trusted fallback locators and request AI-generated alternatives.
 
-**AI-generated suggestions are advisory and are not automatically executed.** This separation helps maintain predictable test behavior and reduces the risks associated with untrusted AI output.
+Candidate selectors are validated, ranked, and evaluated against defined recovery policies.
 
-The project is being developed with an emphasis on maintainability, reliability, security, and extensibility.
+**AI-generated suggestions are advisory-only and are not automatically executed.**
+
+The framework emphasizes:
+
+- Reliable test execution
+- Deterministic locator recovery
+- Secure AI integration
+- Explainable recovery decisions
+- Structured diagnostics and reporting
+- Portable npm package integration
+- Developer-friendly tooling
+- Extensible architecture
 
 ## Key Features
 
 ### 1. Playwright Automation Core
 
-- TypeScript-based automated testing
-- Chromium, Firefox, and WebKit test configurations
+- TypeScript-based automation
+- Chromium, Firefox, and WebKit configurations
 - Page Object Model architecture
-- Reusable fixtures and test utilities
+- Reusable fixtures and utilities
 - Environment-based configuration
-- Smoke and regression testing
-- Screenshots, videos, and trace collection
-- Configurable execution timeouts and retries
+- Smoke and regression tests
+- Screenshots, videos, and traces
+- Configurable timeouts and retries
 
-### 2. Self-Healing Locators
+### 2. Deterministic Self-Healing
 
 - Primary locator validation
-- Deterministic fallback recovery
-- Trusted selector evaluation
-- Confidence-based fallback acceptance
+- Trusted fallback locator evaluation
+- Confidence-based acceptance
 - Unique-match validation
 - Visibility validation
 - Controlled recovery failures
 - Structured healing events
+- Policy-enforced locator recovery
 
 ### 3. Hybrid AI Recovery
 
-AI-assisted recovery supports cloud AI provider integrations, including:
+Supported AI provider integrations:
 
 - OpenAI
 - Google Gemini
 - Mock AI provider for deterministic testing
 
-The AI recovery architecture includes:
+Recovery capabilities include:
 
 - Sanitized DOM context extraction
 - Structured AI recovery requests
-- Configurable provider authorization
+- Explicit provider authorization
 - Confidence thresholds
 - Candidate validation
-- Recovery timeout enforcement
-- Controlled error handling
-- Advisory-only AI suggestions
+- Timeout enforcement
+- Error classification
+- Advisory-only suggestions
 
-External AI usage is restricted by runtime configuration and authorization controls.
+External AI requests are governed by runtime configuration and authorization controls.
 
 ### 4. Intelligent Candidate Ranking
 
-The candidate ranking system evaluates AI-generated locator suggestions based on:
+AI-generated candidates are evaluated using:
 
 - Selector validity
-- Confidence score
+- Confidence scores
 - Element uniqueness
 - Element visibility
-- Duplicate selector detection
-- Deterministic ranking order
+- Duplicate detection
+- Deterministic ranking
 
-Invalid or unsafe candidates are rejected before a suggestion is returned.
+Invalid or unsafe candidates are rejected according to validation policies.
 
-### 5. Explainable AI Recovery — Phase 4.2
+### 5. Explainable AI Recovery
 
-The explainability engine provides structured information about AI candidate evaluation.
-
-Supported capabilities include:
+The explainability system supports:
 
 - Accepted candidate records
 - Rejected candidate records
 - Not-evaluated candidate records
 - Validation rejection reasons
 - Ranking rejection reasons
-- Duplicate-selector rejection diagnostics
+- Duplicate-selector diagnostics
 - Validation timeout explanations
 - Candidate identity preservation
-- Candidate evaluation counts
+- Evaluation counts
 - Validation duration metrics
 
-Explanation records are designed to avoid exposing raw selectors and sensitive DOM content.
+Diagnostic records are designed to minimize exposure of sensitive selectors and DOM content.
 
-### 6. AI Provider Reliability and Security
+### 6. AI Provider Reliability
 
-- Provider request timeout handling
-- Retry policies and bounded backoff
-- Cancellation support
-- Response size validation
-- Provider error classification
-- Request and response validation
-- Runtime authorization controls
+- Provider request timeouts
+- Retry policies
+- Bounded backoff
+- Request cancellation
+- AbortSignal support
+- Response validation
+- Error classification
+- Runtime authorization
 - Provider diagnostics
-- Sensitive information protection
 - Controlled handling of late responses
+- Fail-closed recovery behavior
 
-### 7. Automated Test Reporting
+### 7. Automated Reporting
 
-AutoHeal QA currently supports:
+Supported reporting capabilities include:
 
 - Playwright HTML reports
 - JUnit XML reports
-- Custom AutoHeal JSON summaries
-- Test execution statistics
-- Self-healing event counts
-- AI recovery evaluation metrics
+- AutoHeal JSON summaries
+- Execution statistics
+- Self-healing metrics
+- AI recovery metrics
+- Candidate evaluation analytics
 - Recovery confidence statistics
 
-**Planned improvement:** Integrate Phase 4.2 candidate explanations into aggregated reporting and analytics.
+### 8. Portable Developer CLI
 
-### 8. CI/CD Integration
+AutoHeal QA provides a command-line interface for framework diagnostics.
 
-The project uses GitHub Actions for automated validation and regression testing.
+Available commands:
 
-Development follows a feature-branch workflow with pull requests into the `develop` branch.
+- `autoheal --help`
+- `autoheal --version`
+- `autoheal doctor`
+- `autoheal doctor --project <path>`
+
+The CLI supports diagnostics in both the framework repository and independently configured Playwright projects.
+
+### 9. npm Package Integration
+
+The framework provides package entry points for:
+
+- Public framework API
+- Custom Playwright reporter
+- Portable CLI
+
+The package has been validated using a locally generated npm archive installed into a separate consumer project.
+
+**The package is currently private and has not been published to the public npm registry.**
+
+### 10. CI/CD Integration
+
+GitHub Actions supports automated regression validation.
+
+Development follows a feature-branch workflow with pull requests targeting `develop`.
 
 ## Technology Stack
 
 | Technology | Purpose | Status |
 |---|---|---|
 | TypeScript | Framework implementation | Implemented |
-| Node.js | Runtime environment | Implemented |
+| Node.js | Runtime | Implemented |
 | Playwright | Browser automation | Implemented |
-| OpenAI API | Cloud AI recovery provider | Integrated |
-| Google Gemini API | Cloud AI recovery provider | Integrated |
+| OpenAI API | AI recovery provider | Integrated |
+| Google Gemini API | AI recovery provider | Integrated |
 | GitHub Actions | CI/CD | Implemented |
+| npm | Package distribution tooling | Implemented locally |
 | NestJS | Backend API | Planned |
 | Next.js | Web dashboard | Planned |
 | PostgreSQL | Persistent storage | Planned |
@@ -147,14 +183,19 @@ Development follows a feature-branch workflow with pull requests into the `devel
 
 ## Getting Started
 
+There are two supported development workflows:
+
+1. Work directly with the AutoHeal QA framework repository.
+2. Install a locally packaged version into an independent Playwright project.
+
 ### Prerequisites
 
 - Node.js 22 or later
 - npm
 - Git
-- Supported browser dependencies
+- Playwright browser dependencies
 
-### Installation
+## Framework Development Installation
 
 Clone the repository:
 
@@ -169,43 +210,210 @@ Install dependencies:
 npm install
 ```
 
-Install Playwright browsers:
-
-```bash
-npx playwright install
-```
-
-For Chromium-only testing:
+Install Chromium:
 
 ```bash
 npx playwright install chromium
 ```
 
+Build the framework:
+
+```bash
+npm run build
+```
+
+Verify TypeScript:
+
+```bash
+npm run typecheck
+```
+
 ### Environment Configuration
 
-The project includes an `.env.example` file.
-
-Copy it to create a local environment configuration:
+Create a local environment configuration from the example:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Configure the values according to your testing environment.
+Configure the environment values required for your testing scenario.
 
-Keep API keys, credentials, and other sensitive configuration values out of version control.
+Never commit credentials, API keys, or sensitive configuration values.
 
-AI provider access is subject to the framework's runtime authorization settings.
+AI provider access requires explicit authorization through framework runtime configuration.
 
-## Running Tests
+## Install AutoHeal QA in Another Project
 
-### Chromium Regression Suite
+The framework can be packaged locally and installed into an independent Playwright project.
+
+### Step 1: Build the Package
+
+From the AutoHeal QA repository:
+
+```powershell
+npm install
+npm run build
+npm pack
+```
+
+This creates a local archive similar to:
+
+```text
+autoheal-qa-1.0.0.tgz
+```
+
+### Step 2: Create a Consumer Project
+
+```powershell
+mkdir autoheal-consumer
+cd autoheal-consumer
+npm init -y
+npm install -D @playwright/test
+npx playwright install chromium
+```
+
+### Step 3: Install AutoHeal QA
+
+Install the package using the actual path to your generated archive.
+
+Example:
+
+```powershell
+npm install "E:\gitHubRepos\autoheal-qa\autoheal-qa-1.0.0.tgz"
+```
+
+### Step 4: Configure Playwright
+
+Create `playwright.config.cjs`:
+
+```javascript
+const { defineConfig } = require("@playwright/test");
+
+module.exports = defineConfig({
+  testDir: "./tests",
+
+  use: {
+    browserName: "chromium",
+    headless: true,
+  },
+
+  reporter: [
+    ["list"],
+    ["autoheal-qa/reporter"],
+  ],
+});
+```
+
+### Step 5: Create an Integration Test
+
+Create `tests/example.spec.cjs`:
+
+```javascript
+const { test, expect } = require("@playwright/test");
+
+test("AutoHeal-QA consumer integration", async ({ page }) => {
+  await page.setContent(`
+    <main>
+      <h1>AutoHeal QA</h1>
+      <button data-testid="submit">Submit</button>
+    </main>
+  `);
+
+  await expect(
+    page.getByRole("heading", { name: "AutoHeal QA" })
+  ).toBeVisible();
+
+  await expect(
+    page.getByTestId("submit")
+  ).toBeVisible();
+});
+```
+
+### Step 6: Run Diagnostics
+
+```powershell
+npx --no-install autoheal doctor
+```
+
+The diagnostic command checks:
+
+- Node.js compatibility
+- npm availability
+- Playwright dependency
+- Playwright configuration
+- AutoHeal reporter availability
+
+### Step 7: Execute Tests
+
+```powershell
+npx playwright test --config=playwright.config.cjs
+```
+
+### Step 8: Verify the Report
+
+```powershell
+Test-Path reports/autoheal/summary.json
+```
+
+The report contains test execution statistics and available healing and AI recovery analytics.
+
+### Step 9: Inspect Public API Exports
+
+```powershell
+node -e "console.log(Object.keys(require('autoheal-qa')))"
+```
+
+Verified runtime exports:
+
+- `createSelfHealingRuntime`
+- `loadAIRuntimeConfig`
+- `PolicyEnforcedSelfHealingLocator`
+- `SelfHealingLocator`
+
+For more information:
+
+- [Getting Started Guide](docs/GETTING_STARTED.md)
+- [CLI Documentation](docs/CLI.md)
+
+## Developer CLI
+
+Display available commands:
+
+```powershell
+npx --no-install autoheal --help
+```
+
+Display version:
+
+```powershell
+npx --no-install autoheal --version
+```
+
+Check the current project:
+
+```powershell
+npx --no-install autoheal doctor
+```
+
+Check another existing project:
+
+```powershell
+npx --no-install autoheal doctor --project ./client-project
+```
+
+The `--project` argument must reference an existing directory.
+
+Project initialization through `autoheal init` is planned but is not yet implemented.
+
+## Running Framework Tests
+
+### Chromium Tests
 
 ```bash
 npm run test:chromium
 ```
 
-### All Configured Browser Projects
+### All Configured Projects
 
 ```bash
 npm test
@@ -229,22 +437,10 @@ npm run test:regression
 npm run typecheck
 ```
 
-### Interactive Playwright UI
+### CLI Tests
 
 ```bash
-npm run test:ui
-```
-
-### Debug Mode
-
-```bash
-npm run test:debug
-```
-
-### Reliability Tests
-
-```bash
-npm run test:reliability
+npm run test:cli
 ```
 
 ### Reporting Tests
@@ -253,15 +449,63 @@ npm run test:reliability
 npm run test:reporting
 ```
 
-### AI Recovery Explainability Tests
+### Reliability Tests
 
 ```bash
-npx playwright test tests/ai/ai-recovery-explainability.spec.ts --project=chromium
+npm run test:reliability
 ```
 
-## Test Results
+### Build
 
-**Latest locally verified Chromium regression — November 9, 2026**
+```bash
+npm run build
+```
+
+## Verified Test Results
+
+### Independent Consumer Integration — November 21, 2026
+
+| Verification | Result |
+|---|---|
+| Local npm archive installation | Passed |
+| Node.js diagnostic | Passed |
+| npm diagnostic | Passed |
+| Playwright dependency diagnostic | Passed |
+| Playwright configuration diagnostic | Passed |
+| AutoHeal reporter diagnostic | Passed |
+| Consumer integration test | 1 passed |
+| Consumer integration failures | 0 |
+| Public API exports | Verified |
+| JSON report generation | Passed |
+
+The consumer test ran successfully using Chromium.
+
+Generated report:
+
+```text
+reports/autoheal/summary.json
+```
+
+Reported execution statistics:
+
+```text
+Overall status: passed
+Total attempts: 1
+Passed attempts: 1
+Failed attempts: 0
+```
+
+No locator healing or AI recovery was triggered in this basic consumer integration test.
+
+### CLI Regression Tests
+
+| Metric | Result |
+|---|---|
+| Total tests | 29 |
+| Passed | 29 |
+| Failed | 0 |
+
+### Historical Chromium Regression — November 9, 2026
 
 | Metric | Result |
 |---|---|
@@ -273,11 +517,11 @@ npx playwright test tests/ai/ai-recovery-explainability.spec.ts --project=chromi
 | Healing events | 5 |
 | AI recovery evaluations | 4 |
 
-These results describe the recorded local regression run, not a guarantee of future runs or performance across all browsers.
+These figures describe recorded test executions, not guaranteed results for future runs.
 
 ## Test Reports
 
-Generate a test report by running:
+Execute tests:
 
 ```bash
 npm run test:chromium
@@ -289,7 +533,7 @@ Open the Playwright HTML report:
 npm run report
 ```
 
-The configured report outputs include:
+Example report structure:
 
 ```text
 reports/
@@ -300,83 +544,104 @@ reports/
     └── summary.json
 ```
 
-The custom summary records execution, healing, and AI recovery metrics.
+The custom AutoHeal summary provides execution, healing, and AI recovery metrics.
 
 ## Development Progress
 
 | Phase | Description | Status |
 |---|---|---|
 | Phase 1 | Playwright Automation Core | Completed |
-| Phase 2 | Deterministic Self-Healing Foundation | Implemented |
-| Phase 3 | AI-Assisted Recovery Integration | Implemented |
-| Phase 4.0 | AI Providers, Security and Reliability | Implemented |
+| Phase 2 | Deterministic Self-Healing | Implemented |
+| Phase 3 | AI-Assisted Recovery | Implemented |
+| Phase 4.0 | AI Provider Security and Reliability | Implemented |
 | Phase 4.1 | Candidate Ranking and Validation | Completed |
 | Phase 4.1.1 | Validation Reliability Hardening | Completed |
 | Phase 4.2 | Explainable AI Recovery | Completed |
-| Phase 4.3 | Recovery Analytics and Reporting | Next |
-| Phase 4.4 | Recovery Intelligence Improvements | Planned |
-| Phase 5 | Multi-Project Test Management | Planned |
+| Phase 4.3 | Recovery Analytics and Reporting | Implemented |
+| Phase 5 | Package Adoption and Developer Experience | In progress |
+| Phase 5.5.1 | Developer Installation and Quick Start | Validated locally |
+| Phase 5.5.2 | Developer Project Initialization | Planned |
 | Phase 6 | Backend API and Web Dashboard | Planned |
 | Phase 7 | Production Readiness | Planned |
 
 ## Roadmap
 
-Future development priorities include:
+Current development priorities include:
 
-- AI recovery analytics and reporting integration
-- Expanded real-world application testing
-- Improved candidate evaluation and recovery intelligence
+- Developer onboarding improvements
+- Non-destructive `autoheal init` command
+- Automated external consumer integration tests
+- Expanded package compatibility validation
+- Real-world locator recovery testing
 - Multi-project test management
-- Persistent execution and recovery history
-- Backend APIs using NestJS
-- Web dashboard using Next.js
-- PostgreSQL database integration
-- Optional local AI support
-- Additional production security and reliability validation
-- Deployment and packaging
+- Persistent execution history
+- NestJS backend services
+- Next.js dashboard
+- PostgreSQL integration
+- Optional local AI providers
+- Production security validation
 
 ## Development Workflow
 
-The project follows a structured Git workflow:
+The project follows a Git branching strategy:
 
 ```text
 main
-  └── develop
-        └── feature/*
+└── develop
+    ├── feature/playwright-core
+    ├── feature/ai-recovery-reliability
+    ├── feature/cli-portability
+    └── feature/developer-experience
 ```
 
-Development changes are implemented in feature branches, validated through automated tests, and reviewed through GitHub pull requests before merging.
+Changes are developed in feature branches, validated with automated tests, and submitted through pull requests.
 
-### Recent Milestones
+### Selected Milestones
 
-- [PR #27 — Intelligent Candidate Ranking](https://github.com/DulajAR/autoheal-qa/pull/27)
-- [PR #28 — AI Validation Reliability Hardening](https://github.com/DulajAR/autoheal-qa/pull/28)
-- [PR #29 — Explainable AI Recovery](https://github.com/DulajAR/autoheal-qa/pull/29)
+- [PR #27 - Intelligent Candidate Ranking](https://github.com/DulajAR/autoheal-qa/pull/27)
+- [PR #28 - AI Validation Reliability Hardening](https://github.com/DulajAR/autoheal-qa/pull/28)
+- [PR #29 - Explainable AI Recovery](https://github.com/DulajAR/autoheal-qa/pull/29)
+- [PR #36 - AI Recovery Reliability](https://github.com/DulajAR/autoheal-qa/pull/36)
+- [PR #44 - Portable npm Distribution](https://github.com/DulajAR/autoheal-qa/pull/44)
 
 ## Project Goals
 
-AutoHeal QA aims to provide a reliable and extensible automation framework for software testing teams.
+AutoHeal QA aims to provide an extensible automation framework for software engineering and QA teams.
 
-Its long-term objectives are to:
+Primary goals include:
 
 - Reduce maintenance caused by changing UI locators
 - Improve automated test diagnostics
 - Provide explainable AI-assisted recovery
-- Support repeatable and controlled testing
-- Enable testing across multiple projects
-- Provide useful execution and recovery analytics
-- Integrate with professional development workflows
+- Support repeatable testing
+- Improve framework portability
+- Enable integration into independent projects
+- Provide structured execution analytics
+- Integrate with professional CI/CD workflows
 
 ## Current Limitations
 
-AutoHeal QA is under active development.
+AutoHeal QA remains under active development.
 
-- AI-generated locator suggestions remain advisory.
-- Local AI integration is not yet complete.
-- Multi-project management is planned.
-- The NestJS backend and Next.js dashboard are not yet implemented.
-- Advanced recovery analytics are being developed.
-- Additional production validation is required before commercial deployment.
+- AI-generated locator suggestions are advisory-only.
+- The npm package has not been publicly published.
+- Automated project initialization is not yet available.
+- Independent consumer testing currently covers basic integration.
+- Full cross-project recovery validation is ongoing.
+- Local AI integration is planned.
+- Multi-project management is not yet complete.
+- Backend and dashboard development is planned.
+- Additional security and production validation are required.
+
+## Security
+
+- Never commit API keys or credentials.
+- Keep sensitive environment values outside version control.
+- Require explicit authorization for external AI providers.
+- Sanitize DOM context before provider requests.
+- Validate AI-generated locator candidates.
+- Preserve fail-closed recovery behavior.
+- Avoid exposing sensitive selectors in diagnostics.
 
 ## Author
 
@@ -389,15 +654,17 @@ Software Engineer | Test Automation & AI Engineering
 
 ## License
 
-**Proprietary — All Rights Reserved**
+**Proprietary - All Rights Reserved**
 
 This repository does not grant permission to copy, modify, redistribute, or commercially use its source code without authorization from the copyright holder.
 
 ## Project Status
 
-**Active Development — Phase 4.2 Completed**
+**Active Development - Phase 5.5: Developer Experience and Package Adoption**
 
-Next milestone: **Phase 4.3 — AI Recovery Analytics & Reporting**
+Phase 5.5.1 has been validated locally through an independent Playwright consumer integration test.
+
+**Next milestone:** Phase 5.5.2 - Developer Project Initialization.
 
 ---
 

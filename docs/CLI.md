@@ -3,89 +3,136 @@
 
 ## Overview
 
-AutoHeal-QA provides a command-line interface for
-framework diagnostics and developer utilities.
+AutoHeal-QA provides a portable command-line interface for framework diagnostics.
 
-The CLI is implemented using Node.js and is currently
-intended for use within the AutoHeal-QA repository.
+The CLI supports both the framework repository and external Playwright projects that install AutoHeal-QA as a dependency.
 
 ## Requirements
 
 - Node.js 22 or later
 - npm
-- Project dependencies installed with `npm ci`
+- Playwright Test
+- AutoHeal-QA installed or available locally
 
-## Available Commands
+## Commands
 
 ### Help
+
+From the framework repository:
 
 ```bash
 node bin/autoheal.cjs --help
 ```
 
-Displays available commands and usage examples.
+From an installed consumer project:
+
+```bash
+npx --no-install autoheal --help
+```
 
 ### Version
 
 ```bash
-node bin/autoheal.cjs --version
+npx --no-install autoheal --version
 ```
-
-Displays the framework version from package.json.
 
 ### Environment Diagnostics
 
 ```bash
-node bin/autoheal.cjs doctor
+npx --no-install autoheal doctor
 ```
 
-Checks:
+The `doctor` command checks the current working directory by default.
 
-- Node.js version compatibility
-- npm availability
-- Playwright dependency installation
-- Playwright configuration
-- AutoHeal-QA reporter availability
+It validates:
 
-The command exits with a non-zero status if required
-environment checks fail.
+1. Node.js version compatibility
+2. npm availability
+3. Playwright dependency installation
+4. Playwright configuration availability
+5. AutoHeal-QA reporter availability
 
-## Running CLI Tests
+The command exits with a non-zero status when required checks fail.
+
+### Inspect Another Project
+
+```bash
+npx --no-install autoheal doctor --project ./client-project
+```
+
+The `--project` option accepts an existing project directory.
+
+## Supported Playwright Configuration Files
+
+- playwright.config.ts
+- playwright.config.js
+- playwright.config.mjs
+- playwright.config.cjs
+- playwright.config.mts
+- playwright.config.cts
+
+## Reporter Detection
+
+The CLI supports:
+
+- The original source-based AutoHeal-QA reporter
+- The reporter exported by an npm-installed AutoHeal-QA package
+
+## Local Package Installation
+
+The package is currently private and is not published to npm.
+
+From the framework repository:
+
+```powershell
+npm run build
+npm pack
+```
+
+This generates a local package archive such as:
+
+```text
+autoheal-qa-1.0.0.tgz
+```
+
+Install that archive in a separate Playwright project:
+
+```powershell
+npm install "C:\path\to\autoheal-qa-1.0.0.tgz"
+```
+
+Then run:
+
+```powershell
+npx --no-install autoheal doctor
+```
+
+## Testing
+
+Run the CLI regression suite:
 
 ```bash
 npm run test:cli
 ```
 
-Executes the automated CLI regression suite.
-
 ## Cross-Platform Validation
 
-GitHub Actions validates the CLI on:
+GitHub Actions validates the CLI on Windows and Ubuntu.
 
-- Ubuntu
-- Windows
+Workflow:
 
-The workflow is defined in:
-
-`.github/workflows/cli-ci.yml`
-
-It performs syntax checks, regression tests, version
-verification, environment diagnostics, and npm package
-inspection.
+```text
+.github/workflows/cli-ci.yml
+```
 
 ## Current Limitations
 
-- The CLI is currently designed around the framework
-  repository structure.
-- Diagnostics for independently installed client
-  projects are not yet supported.
-- The npm package is private and is not published.
-- Additional CLI commands are planned for future phases.
+- The npm package is private and not publicly published.
+- The CLI currently provides help, version information, and diagnostics.
+- Project initialization and additional developer utilities are planned.
 
-## Future Improvements
+## Security
 
-- Portable installation and execution
-- Client-project diagnostics
-- Additional framework management commands
-- Controlled npm distribution
-```
+- Do not commit API keys or credentials.
+- Do not expose sensitive project configuration in diagnostic output.
+- Keep external AI provider authorization explicit.
