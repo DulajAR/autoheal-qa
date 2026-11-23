@@ -5,6 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+const { initializeProject } = require("./init-project.cjs");
+
 // -----------------------------------
 // 1. Framework configuration
 // -----------------------------------
@@ -65,10 +67,11 @@ USAGE:
 
 COMMANDS:
   doctor              Check development environment
+  init                Initialize a Playwright project
   help                Display available commands
 
 OPTIONS:
-  --project <path>    Project directory for doctor
+  --project <path>    Project directory for doctor or init
   -h, --help          Show help information
   -v, --version       Show framework version
 
@@ -77,6 +80,8 @@ EXAMPLES:
   autoheal --version
   autoheal doctor
   autoheal doctor --project ./client-project
+  autoheal init
+  autoheal init --project ./client-project
 `);
 }
 
@@ -353,6 +358,7 @@ function runDoctor(projectDirectory = process.cwd()) {
 function main(args = process.argv.slice(2)) {
   const command = args[0];
 
+  // Help command.
   if (
     !command ||
     command === "help" ||
@@ -372,6 +378,7 @@ function main(args = process.argv.slice(2)) {
     return;
   }
 
+  // Version command.
   if (
     command === "--version" ||
     command === "-v"
@@ -389,6 +396,7 @@ function main(args = process.argv.slice(2)) {
     return;
   }
 
+  // Environment diagnostics command.
   if (command === "doctor") {
     if (args.length === 1) {
       runDoctor();
@@ -414,6 +422,85 @@ function main(args = process.argv.slice(2)) {
     return;
   }
 
+  // -----------------------------------
+  // Project initialization command
+  // -----------------------------------
+
+  if (command === "init") {
+    let projectDirectory = process.cwd();
+
+    if (args.length > 1) {
+      if (
+        args.length !== 3 ||
+        args[1] !== "--project" ||
+        typeof args[2] !== "string" ||
+        args[2].trim().length === 0 ||
+        args[2].startsWith("--")
+      ) {
+        console.error(
+          "Error: init accepts only --project <path>."
+        );
+
+        process.exitCode = 1;
+        return;
+      }
+
+      projectDirectory = args[2];
+    }
+
+    try {
+      const root = resolveProjectRoot(projectDirectory);
+      const result = initializeProject(root);
+
+      console.log(
+        "\nAutoHeal QA - Project Initialization\n"
+      );
+
+      console.log(`Project: ${root}\n`);
+
+      for (const file of result.created) {
+        console.log(`CREATED ${file}`);
+      }
+
+      for (const file of result.skipped) {
+        console.log(`SKIPPED ${file}`);
+      }
+
+      console.log("");
+
+      if (result.created.length === 0) {
+        console.log(
+          "No new files created. Existing files were preserved."
+        );
+      } else {
+        console.log(
+          "Initialization complete."
+        );
+      }
+
+      console.log(
+        "\nNext steps:"
+      );
+
+      console.log(
+        "  npx playwright test"
+      );
+
+      console.log(
+        "  npx --no-install autoheal doctor"
+      );
+    } catch (error) {
+      console.error(
+        `Initialization failed: ${error.message}`
+      );
+
+      process.exitCode = 1;
+    }
+
+    return;
+  }
+
+  // Unknown command.
   console.error(`Unknown command: ${command}`);
 
   console.error(
