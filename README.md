@@ -1,4 +1,3 @@
-
 # AutoHeal QA
 
 **AI-Powered Self-Healing Test Automation Framework**
@@ -136,7 +135,7 @@ Supported reporting capabilities include:
 
 ### 8. Portable Developer CLI
 
-AutoHeal QA provides a command-line interface for framework diagnostics.
+AutoHeal QA provides a command-line interface for framework diagnostics and non-destructive project initialization.
 
 Available commands:
 
@@ -144,6 +143,8 @@ Available commands:
 - `autoheal --version`
 - `autoheal doctor`
 - `autoheal doctor --project <path>`
+- `autoheal init`
+- `autoheal init --project <path>`
 
 The CLI supports diagnostics in both the framework repository and independently configured Playwright projects.
 
@@ -268,7 +269,7 @@ autoheal-qa-1.0.0.tgz
 mkdir autoheal-consumer
 cd autoheal-consumer
 npm init -y
-npm install -D @playwright/test
+npm install -D @playwright/test@^1.64.1
 npx playwright install chromium
 ```
 
@@ -282,52 +283,22 @@ Example:
 npm install "E:\gitHubRepos\autoheal-qa\autoheal-qa-1.0.0.tgz"
 ```
 
-### Step 4: Configure Playwright
+### Step 4: Initialize Playwright
 
-Create `playwright.config.cjs`:
-
-```javascript
-const { defineConfig } = require("@playwright/test");
-
-module.exports = defineConfig({
-  testDir: "./tests",
-
-  use: {
-    browserName: "chromium",
-    headless: true,
-  },
-
-  reporter: [
-    ["list"],
-    ["autoheal-qa/reporter"],
-  ],
-});
+```powershell
+npx --no-install autoheal init
 ```
 
-### Step 5: Create an Integration Test
+For a fresh consumer project, this creates `playwright.config.cjs` and `tests/autoheal.example.spec.cjs`. Existing files are preserved.
 
-Create `tests/example.spec.cjs`:
+### Step 5: Verify the generated files
 
-```javascript
-const { test, expect } = require("@playwright/test");
-
-test("AutoHeal-QA consumer integration", async ({ page }) => {
-  await page.setContent(`
-    <main>
-      <h1>AutoHeal QA</h1>
-      <button data-testid="submit">Submit</button>
-    </main>
-  `);
-
-  await expect(
-    page.getByRole("heading", { name: "AutoHeal QA" })
-  ).toBeVisible();
-
-  await expect(
-    page.getByTestId("submit")
-  ).toBeVisible();
-});
+```powershell
+Test-Path playwright.config.cjs
+Test-Path tests/autoheal.example.spec.cjs
 ```
+
+For existing projects, inspect the existing configuration and ensure the AutoHeal reporter is registered. See the [Getting Started Guide](docs/GETTING_STARTED.md) for manual configuration.
 
 ### Step 6: Run Diagnostics
 
@@ -403,7 +374,19 @@ npx --no-install autoheal doctor --project ./client-project
 
 The `--project` argument must reference an existing directory.
 
-Project initialization through `autoheal init` is planned but is not yet implemented.
+Initialize the current project:
+
+```powershell
+npx --no-install autoheal init
+```
+
+Initialize another existing project:
+
+```powershell
+npx --no-install autoheal init --project ./client-project
+```
+
+Initialization requires an existing Node.js project with Playwright and AutoHeal-QA installed. Existing configurations and starter tests are preserved. Dependencies are not installed automatically.
 
 ## Running Framework Tests
 
@@ -497,13 +480,47 @@ Failed attempts: 0
 
 No locator healing or AI recovery was triggered in this basic consumer integration test.
 
-### CLI Regression Tests
+### Project Initialization — November 23, 2026
+
+| Verification | Result |
+|---|---|
+| Fresh packaged consumer initialization | Passed |
+| Generated starter test | 1 passed |
+| Repeated initialization | Existing files preserved |
+| Environment diagnostics | 5/5 passed |
+| PR #46 CI checks | 6/6 passed |
+
+### CLI Regression Tests — November 24, 2026
 
 | Metric | Result |
 |---|---|
-| Total tests | 29 |
-| Passed | 29 |
+| Total tests | 44 |
+| Passed | 44 |
 | Failed | 0 |
+
+
+### Installed-Package Integration — November 24, 2026
+
+| Verification | Result |
+|---|---|
+| Package integration tests | 13/13 passed |
+| Playwright recovery scenarios | 7/7 passed |
+| CLI regression tests | 44/44 passed |
+| Reporting regression tests | 99/99 passed |
+| Deterministic healing events | 1 |
+| AI advisory suggestions | 1 |
+| AI recovery failures | 0 |
+| Automatic AI healing | 0 |
+| TypeScript validation | Passed |
+| Production build | Passed |
+| Local Windows validation | Passed |
+
+AI recovery was validated using a controlled mock provider
+and an isolated HTTPS browser fixture. AI-generated locator
+suggestions remain advisory-only.
+
+Cross-platform package integration is configured through
+GitHub Actions for Windows and Linux.
 
 ### Historical Chromium Regression — November 9, 2026
 
@@ -560,7 +577,8 @@ The custom AutoHeal summary provides execution, healing, and AI recovery metrics
 | Phase 4.3 | Recovery Analytics and Reporting | Implemented |
 | Phase 5 | Package Adoption and Developer Experience | In progress |
 | Phase 5.5.1 | Developer Installation and Quick Start | Validated locally |
-| Phase 5.5.2 | Developer Project Initialization | Planned |
+| Phase 5.5.2 | Developer Project Initialization | Completed (PR #46) |
+| Phase 5.5.3 | Developer Adoption and Package Integration Hardening | In progress |
 | Phase 6 | Backend API and Web Dashboard | Planned |
 | Phase 7 | Production Readiness | Planned |
 
@@ -569,7 +587,7 @@ The custom AutoHeal summary provides execution, healing, and AI recovery metrics
 Current development priorities include:
 
 - Developer onboarding improvements
-- Non-destructive `autoheal init` command
+- CLI command-level initialization regression coverage
 - Automated external consumer integration tests
 - Expanded package compatibility validation
 - Real-world locator recovery testing
@@ -603,6 +621,7 @@ Changes are developed in feature branches, validated with automated tests, and s
 - [PR #29 - Explainable AI Recovery](https://github.com/DulajAR/autoheal-qa/pull/29)
 - [PR #36 - AI Recovery Reliability](https://github.com/DulajAR/autoheal-qa/pull/36)
 - [PR #44 - Portable npm Distribution](https://github.com/DulajAR/autoheal-qa/pull/44)
+- [PR #46 - Non-destructive Project Initialization](https://github.com/DulajAR/autoheal-qa/pull/46)
 
 ## Project Goals
 
@@ -625,9 +644,9 @@ AutoHeal QA remains under active development.
 
 - AI-generated locator suggestions are advisory-only.
 - The npm package has not been publicly published.
-- Automated project initialization is not yet available.
-- Independent consumer testing currently covers basic integration.
-- Full cross-project recovery validation is ongoing.
+- Initialization preserves existing configurations; existing projects may require manual reporter configuration.
+- Automated installed-package consumer testing covers installation, initialization, CLI execution, locator recovery, runtime policy enforcement, and reporting.
+- Controlled installed-package recovery validation is complete; broader application compatibility testing is ongoing.
 - Local AI integration is planned.
 - Multi-project management is not yet complete.
 - Backend and dashboard development is planned.
@@ -664,7 +683,9 @@ This repository does not grant permission to copy, modify, redistribute, or comm
 
 Phase 5.5.1 has been validated locally through an independent Playwright consumer integration test.
 
-**Next milestone:** Phase 5.5.2 - Developer Project Initialization.
+Phase 5.5.2 was merged into `develop` through PR #46 on November 23, 2026.
+
+**Current milestone:** Phase 5.5.3 - Developer Adoption and Package Integration Hardening.
 
 ---
 

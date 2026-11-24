@@ -1,4 +1,3 @@
-
 # AutoHeal-QA - Getting Started
 
 ## Overview
@@ -49,7 +48,7 @@ cd autoheal-consumer
 
 npm init -y
 
-npm install -D @playwright/test
+npm install -D @playwright/test@^1.64.1
 npx playwright install chromium
 ```
 
@@ -59,58 +58,26 @@ Install the AutoHeal-QA archive using its actual absolute path:
 npm install "C:\path\to\autoheal-qa-1.0.0.tgz"
 ```
 
-## 3. Configure Playwright
-
-Create `playwright.config.cjs`:
-
-```javascript
-const { defineConfig } = require("@playwright/test");
-
-module.exports = defineConfig({
-  testDir: "./tests",
-
-  use: {
-    browserName: "chromium",
-    headless: true,
-  },
-
-  reporter: [
-    ["list"],
-    ["autoheal-qa/reporter"],
-  ],
-});
-```
-
-## 4. Create a Basic Test
-
-Create the `tests` directory:
+## 3. Initialize the Project
 
 ```powershell
-New-Item -ItemType Directory -Force tests
+npx --no-install autoheal init
 ```
 
-Create `tests/example.spec.cjs`:
+A fresh project receives:
 
-```javascript
-const { test, expect } = require("@playwright/test");
+- `playwright.config.cjs`
+- `tests/autoheal.example.spec.cjs`
 
-test("AutoHeal-QA consumer integration", async ({ page }) => {
-  await page.setContent(`
-    <main>
-      <h1>AutoHeal QA</h1>
-      <button data-testid="submit">Submit</button>
-    </main>
-  `);
+The command preserves existing files and does not install dependencies. For an existing configuration, check that `autoheal-qa/reporter` is registered manually if needed.
 
-  await expect(
-    page.getByRole("heading", { name: "AutoHeal QA" })
-  ).toBeVisible();
+## 4. Verify Non-destructive Initialization
 
-  await expect(
-    page.getByTestId("submit")
-  ).toBeVisible();
-});
+```powershell
+npx --no-install autoheal init
 ```
+
+For the fresh project initialized above, both files should be skipped and preserved. To initialize another existing directory, use `npx --no-install autoheal init --project ./client-project`.
 
 ## 5. Validate the Environment
 
@@ -164,6 +131,59 @@ AI-generated locator suggestions are advisory and are not automatically executed
 
 For initial integration testing, no external AI provider credentials are required.
 
+## Manual configuration alternative
+
+Create `playwright.config.cjs`:
+
+```javascript
+const { defineConfig } = require("@playwright/test");
+
+module.exports = defineConfig({
+  testDir: "./tests",
+
+  use: {
+    browserName: "chromium",
+    headless: true,
+  },
+
+  reporter: [
+    ["list"],
+    ["autoheal-qa/reporter"],
+  ],
+});
+```
+
+### Create a Basic Test
+
+Create the `tests` directory:
+
+```powershell
+New-Item -ItemType Directory -Force tests
+```
+
+Create `tests/example.spec.cjs`:
+
+```javascript
+const { test, expect } = require("@playwright/test");
+
+test("AutoHeal-QA consumer integration", async ({ page }) => {
+  await page.setContent(`
+    <main>
+      <h1>AutoHeal QA</h1>
+      <button data-testid="submit">Submit</button>
+    </main>
+  `);
+
+  await expect(
+    page.getByRole("heading", { name: "AutoHeal QA" })
+  ).toBeVisible();
+
+  await expect(
+    page.getByTestId("submit")
+  ).toBeVisible();
+});
+```
+
 ## Troubleshooting
 
 ### Playwright dependency not detected
@@ -171,7 +191,7 @@ For initial integration testing, no external AI provider credentials are require
 Install Playwright Test:
 
 ```powershell
-npm install -D @playwright/test
+npm install -D @playwright/test@^1.64.1
 ```
 
 ### Playwright configuration not detected
@@ -192,6 +212,14 @@ Install Chromium:
 
 ```powershell
 npx playwright install chromium
+```
+
+### Unknown command: init
+
+Ensure the installed archive includes the initialization command introduced in PR #46. Rebuild and reinstall the current archive if necessary.
+
+```powershell
+npx --no-install autoheal --help
 ```
 
 ## Next Steps
